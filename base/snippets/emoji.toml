@@ -23,7 +23,7 @@ match = "(?i:\\bJP[N]?\\d*\\b|Japan|Tokyo|Osaka|Saitama|日本|东京|大阪|埼
 emoji = "🇯🇵"
 
 [[emoji]]
-match = "(?i:\\bK[O]?R\\d*\\b|Korea|(?<!North)Korea|首尔|韩|韓)"
+match = "(?i:(?<!North\\s)(\\bK[O]?R\\d*\\b|Korea|首尔|韩|韓))"
 emoji = "🇰🇷"
 
 [[emoji]]

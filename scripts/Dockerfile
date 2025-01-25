@@ -30,7 +30,7 @@ RUN set -xe && \
     install -d /usr/include/date/ && \
     install -m644 libcron/externals/date/include/date/* /usr/include/date/ && \
     cd .. && \
-    git clone https://github.com/ToruNiina/toml11 --branch="v3.7.1" --depth=1 && \
+    git clone https://github.com/ToruNiina/toml11 --branch="v4.3.0" --depth=1 && \
     cd toml11 && \
     cmake -DCMAKE_CXX_STANDARD=11 . && \
     make install -j $THREADS && \
@@ -52,6 +52,10 @@ RUN apk add --no-cache --virtual subconverter-deps pcre2 libcurl yaml-cpp
 
 COPY --from=builder /subconverter/subconverter /usr/bin/
 COPY --from=builder /subconverter/base /base/
+
+ENV TZ=Africa/Abidjan
+RUN ln -sf /usr/share/zoneinfo/$TZ /etc/localtime
+RUN echo $TZ > /etc/timezone
 
 # set entry
 WORKDIR /base

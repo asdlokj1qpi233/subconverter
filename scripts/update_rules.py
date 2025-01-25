@@ -22,10 +22,13 @@ def open_repo(path: str):
         return None
 
 
-def update_rules(repo_path, save_path, commit, matches, keep_tree):
+def update_rules(repo_path: str, save_path: str, matches: list[str], keep_tree: bool):
     os.makedirs(save_path, exist_ok=True)
     for pattern in matches:
         files = glob.glob(os.path.join(repo_path, pattern), recursive=True)
+        if len(files) == 0:
+            logging.warn(f"no files found for pattern {pattern}")
+            continue
         for file in files:
             if os.path.isdir(file):
                 continue
@@ -51,12 +54,13 @@ def main():
     for section in config.sections():
         repo = config.get(section, "name", fallback=section)
         url = config.get(section, "url")
-        commit = config.get(section, "checkout")
+        commit = config.get(section, "commit", fallback=None)
+        branch = config.get(section, "branch", fallback=None)
         matches = config.get(section, "match").split("|")
         save_path = config.get(section, "dest", fallback=f"base/rules/{repo}")
         keep_tree = config.getboolean(section, "keep_tree", fallback=True)
 
-        logging.info(f"reading files from url {url} with commit {commit} and matches {matches}, save to {save_path} keep_tree {keep_tree}")
+        logging.info(f"reading files from url {url}, matches {matches}, save to {save_path} keep_tree {keep_tree}")
 
         repo_path = os.path.join("./tmp/repo/", repo)
 
@@ -67,8 +71,21 @@ def main():
         else:
             logging.info(f"repo {repo_path} exists")
             
-        r.git.checkout(commit)
-        update_rules(repo_path, save_path, commit, matches, keep_tree)
+        try:
+            if commit is not None:
+                logging.info(f"checking out to commit {commit}")
+                r.git.checkout(commit)
+            elif branch is not None:
+                logging.info(f"checking out to branch {branch}")
+                r.git.checkout(branch)
+            else:
+                logging.info(f"checking out to default branch")
+                r.active_branch.checkout()
+        except Exception as e:
+            logging.error(f"checkout failed {e}")
+            continue
+
+        update_rules(repo_path, save_path, matches, keep_tree)
 
     shutil.rmtree("./tmp", ignore_errors=True)
 

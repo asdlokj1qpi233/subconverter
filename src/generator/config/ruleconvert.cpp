@@ -10,9 +10,7 @@
 
 /// rule type lists
 #define basic_types "DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "IP-CIDR", "SRC-IP-CIDR", "GEOIP", "MATCH", "FINAL"
-// 新增meta路由规则
-//string_array ClashRuleTypes = {basic_types, "IP-CIDR6", "SRC-PORT", "DST-PORT", "PROCESS-NAME"};
-string_array ClashRuleTypes = {basic_types, "IP-CIDR6", "SRC-PORT", "DST-PORT", "PROCESS-NAME", "DOMAIN-REGEX", "GEOSITE", "IP-SUFFIX", "IP-ASN", "SRC-GEOIP", "SRC-IP-ASN", "SRC-IP-SUFFIX", "IN-PORT", "IN-TYPE", "IN-USER", "IN-NAME", "PROCESS-PATH-REGEX", "PROCESS-PATH", "PROCESS-NAME-REGEX", "UID", "NETWORK", "DSCP", "SUB-RULE", "RULE-SET", "AND", "OR", "NOT"};
+string_array ClashRuleTypes = {basic_types, "IP-CIDR6", "SRC-PORT", "DST-PORT", "PROCESS-NAME"};
 string_array Surge2RuleTypes = {basic_types, "IP-CIDR6", "USER-AGENT", "URL-REGEX", "PROCESS-NAME", "IN-PORT", "DEST-PORT", "SRC-IP"};
 string_array SurgeRuleTypes = {basic_types, "IP-CIDR6", "USER-AGENT", "URL-REGEX", "AND", "OR", "NOT", "PROCESS-NAME", "IN-PORT", "DEST-PORT", "SRC-IP"};
 string_array QuanXRuleTypes = {basic_types, "USER-AGENT", "HOST", "HOST-SUFFIX", "HOST-KEYWORD"};
@@ -250,26 +248,8 @@ std::string rulesetToClashStr(YAML::Node &base_rule, std::vector<RulesetContent>
                 strLine.erase(strLine.find("//"));
                 strLine = trimWhitespace(strLine);
             }
-
-            //AND & OR & NOT
-            if(startsWith(strLine, "AND") || startsWith(strLine, "OR") || startsWith(strLine, "NOT"))
-            {
-                output_content += "  - " + strLine + "," + rule_group + "\n";
-            }
-            //SUB-RULE & RULE-SET
-            else if (startsWith(strLine, "SUB-RULE") || startsWith(strLine, "RULE-SET"))
-            {
-                output_content += "  - " + strLine + "\n";
-            }
-            else
-            //OTHER
-            {
-                strLine = transformRuleToCommon(temp, strLine, rule_group);
-                output_content += "  - " + strLine + "\n";
-            }
-
-            //strLine = transformRuleToCommon(temp, strLine, rule_group);
-            //output_content += "  - " + strLine + "\n";
+            strLine = transformRuleToCommon(temp, strLine, rule_group);
+            output_content += "  - " + strLine + "\n";
             total_rules++;
         }
     }

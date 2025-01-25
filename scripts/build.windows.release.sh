@@ -1,18 +1,7 @@
 #!/bin/bash
 set -xe
 
-# 获取系统架构
-ARCH=$(uname -m)
-
-if [ "$ARCH" == "x86_64" ]; then
-    TOOLCHAIN="mingw-w64-x86_64"
-else
-    TOOLCHAIN="mingw-w64-i686"
-fi
-
-pacman -S --needed --noconfirm base-devel ${TOOLCHAIN}-toolchain ${TOOLCHAIN}-cmake ${TOOLCHAIN}-nghttp2 ${TOOLCHAIN}-openssl
-
-git clone https://github.com/curl/curl --depth=1 --branch curl-8_8_0
+git clone https://github.com/curl/curl --depth=1 --branch curl-8_6_0
 cd curl
 cmake -DCMAKE_BUILD_TYPE=Release \
       -DCURL_USE_LIBSSH2=OFF \
@@ -62,7 +51,7 @@ cmake -DRAPIDJSON_BUILD_DOC=OFF -DRAPIDJSON_BUILD_EXAMPLES=OFF -DRAPIDJSON_BUILD
 make install -j4
 cd ..
 
-git clone https://github.com/ToruNiina/toml11 --branch="v3.7.1" --depth=1
+git clone https://github.com/ToruNiina/toml11 --branch "v4.3.0" --depth=1
 cd toml11
 cmake -DCMAKE_INSTALL_PREFIX="$MINGW_PREFIX" -G "Unix Makefiles" -DCMAKE_CXX_STANDARD=11 .
 make install -j4

@@ -98,6 +98,8 @@ struct Proxy {
     tribool AllowInsecure;
     tribool TLS13;
 
+    String UnderlyingProxy;
+
     uint16_t SnellVersion = 0;
     String ServerName;
 

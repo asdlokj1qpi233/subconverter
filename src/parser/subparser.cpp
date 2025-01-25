@@ -41,6 +41,7 @@ void commonConstruct(Proxy &node, ProxyType type, const std::string &group, cons
     node.Group = group;
     node.Remark = remarks;
     node.Hostname = server;
+    node.UnderlyingProxy = underlying_proxy;
     node.Port = to_int(port);
     node.UDP = udp;
     node.TCPFastOpen = tfo;
@@ -1120,6 +1121,7 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes) {
         if (port.empty() || port == "0")
             continue;
         udp = safe_as<std::string>(singleproxy["udp"]);
+        tfo = safe_as<std::string>(singleproxy["fast-open"]);
         scv = safe_as<std::string>(singleproxy["skip-cert-verify"]);
         switch (hash_(proxytype)) {
             case "vmess"_hash:

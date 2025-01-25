@@ -3,17 +3,18 @@
 
 #include "def.h"
 
-enum ProxyGroupType
+enum class ProxyGroupType
 {
     Select,
     URLTest,
     Fallback,
     LoadBalance,
     Relay,
-    SSID
+    SSID,
+    Smart
 };
 
-enum BalanceStrategy
+enum class BalanceStrategy
 {
     ConsistentHashing,
     RoundRobin
@@ -45,6 +46,7 @@ struct ProxyGroupConfig
             case ProxyGroupType::Fallback: return "fallback";
             case ProxyGroupType::Relay: return "relay";
             case ProxyGroupType::SSID: return "ssid";
+            case ProxyGroupType::Smart: return "smart";
         }
         return "";
     }

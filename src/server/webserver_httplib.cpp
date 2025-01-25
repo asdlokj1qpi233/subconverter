@@ -47,16 +47,23 @@ static httplib::Server::Handler makeHandler(const responseRoute &rr)
             {
                 continue;
             }
-            req.headers[h.first] = h.second;
+            req.headers.emplace(h.first.data(), h.second.data());
         }
         req.argument = request.params;
-        if (request.get_header_value("Content-Type") == "application/x-www-form-urlencoded")
+        if (request.method == "POST" || request.method == "PUT" || request.method == "PATCH")
         {
-            req.postdata = urlDecode(request.body);
-        }
-        else
-        {
-            req.postdata = request.body;
+            if (request.is_multipart_form_data() && !request.files.empty())
+            {
+                req.postdata = request.files.begin()->second.content;
+            }
+            else if (request.get_header_value("Content-Type") == "application/x-www-form-urlencoded")
+            {
+                req.postdata = urlDecode(request.body);
+            }
+            else
+            {
+                req.postdata = request.body;
+            }
         }
         auto result = rr.rc(req, resp);
         response.status = resp.status_code;
@@ -163,6 +170,7 @@ int WebServer::start_web_server_multi(listener_args *args)
         {
             res.set_header("Access-Control-Allow-Headers", req.get_header_value("Access-Control-Request-Headers"));
         }
+        res.set_header("Access-Control-Allow-Origin", "*");
         return httplib::Server::HandlerResponse::Unhandled;
     });
     for (auto &x : redirect_map)
@@ -187,7 +195,7 @@ int WebServer::start_web_server_multi(listener_args *args)
     {
         try
         {
-            std::rethrow_exception(e);
+            if (e) std::rethrow_exception(e);
         }
         catch (const httplib::Error &err)
         {
@@ -212,6 +220,9 @@ int WebServer::start_web_server_multi(listener_args *args)
     {
         server.set_mount_point("/", serve_file_root);
     }
+    server.new_task_queue = [args] {
+        return new httplib::ThreadPool(args->max_workers);
+    };
     server.bind_to_port(args->listen_address, args->port, 0);
 
     std::thread thread([&]()

@@ -644,7 +644,10 @@ proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGroupCo
         string_array filtered_nodelist;
 
         singlegroup["name"] = x.Name;
-        singlegroup["type"] = x.TypeStr();
+        if (x.Type == ProxyGroupType::Smart)
+            singlegroup["type"] = "url-test";
+        else
+            singlegroup["type"] = x.TypeStr();
 
         switch (x.Type) {
             case ProxyGroupType::Select:
@@ -681,7 +684,10 @@ proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGroupCo
         }
         if (!filtered_nodelist.empty())
             singlegroup["proxies"] = filtered_nodelist;
-        //singlegroup.SetStyle(YAML::EmitterStyle::Flow);
+        if(group_block)
+            singlegroup.SetStyle(YAML::EmitterStyle::Block);
+        else
+            singlegroup.SetStyle(YAML::EmitterStyle::Flow);
 
         bool replace_flag = false;
         for (auto &&original_group: original_groups) {
@@ -2324,7 +2330,6 @@ proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json, std::vector
         xudp.define(x.XUDP);
         tfo.define(x.TCPFastOpen);
         scv.define(x.AllowInsecure);
-
         rapidjson::Value proxy(rapidjson::kObjectType);
         switch (x.Type) {
             case ProxyType::Shadowsocks: {

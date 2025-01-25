@@ -117,9 +117,9 @@ match = '^Smart Access expire: (\d+)/(\d+)/(\d+)$'
 replace = '$1:$2:$3:0:0:0'
 
 [node_pref]
-#udp_flag = true
+#udp_flag = false
 #tcp_fast_open_flag = false
-#skip_cert_verify_flag = true
+#skip_cert_verify_flag = false
 #tls13_flag = false
 
 sort_flag = false
@@ -135,13 +135,14 @@ filter_deprecated_nodes = false
 append_sub_userinfo = true
 clash_use_new_field_name = true
 
-# Generate style of the proxies section of Clash subscriptions.
+# Generate style of the proxies and proxy groups section of Clash subscriptions.
 # Supported styles: block, flow, compact
 # Block: - name: name1    Flow: - {name: name1, key: value}    Compact: [{name: name1, key: value},{name: name2, key: value}]
 #         key: value           - {name: name2, key: value}
 #       - name: name2
 #         key: value
 clash_proxies_style = "flow"
+clash_proxy_groups_style = "block"
 
 # add Clash mode to sing-box rules, and add a GLOBAL group to end of outbounds
 singbox_add_clash_modes = true
@@ -242,6 +243,10 @@ value = "true"
 [[template.globals]]
 key = "clash.log_level"
 value = "info"
+
+[[template.globals]]
+key = "clash.external_controller"
+value = "127.0.0.1:9090"
 
 [[template.globals]]
 key = "singbox.allow_lan"
