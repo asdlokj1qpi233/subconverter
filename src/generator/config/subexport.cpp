@@ -2260,18 +2260,30 @@ proxyToLoon(std::vector<Proxy> &nodes, const std::string &base_conf,
                 break;
             case ProxyType::VLESS:
                 if (flow != "xtls-rprx-vision") {
-                    continue;
+                    if (transproto == "ws") {
+                        proxy = "VLESS," + hostname + "," + port + ",\"" + id + "\"" +
+                            ",path=" + path + ",host=" + host + ",transport=" + transproto +
+                            ",udp=" + (udp.get() ? "true" : "false") + ",over-tls=" + (
+                                tlssecure ? "true" : "false") + ",sni=" + sni;
+                    } else {
+                        continue;
+                    }
+                } else {
+                    proxy = "VLESS," + hostname + "," + port + ",\"" + id + "\",flow=" + flow + ",public-key=\"" + pk +
+                            "\",short-id=" + shortId + ",udp=" + (udp.get() ? "true" : "false") + ",over-tls=" + (
+                                tlssecure ? "true" : "false") + ",sni=" + sni;
                 }
-                proxy = "VLESS," + hostname + "," + port + ",\"" + id + "\",flow=" + flow + ",public-key=\"" + pk +
-                        "\",short-id=" + shortId + ",udp=" + (udp.get() ? "true" : "false") + ",over-tls=" + (
-                            tlssecure ? "true" : "false") + ",sni=" + sni;
 
                 switch (hash_(transproto)) {
                     case "tcp"_hash:
                         proxy += ",transport=tcp";
                         break;
                     default:
-                        continue;
+                        if (transproto != "ws") {
+                            continue;
+                        } else {
+                            break;;
+                        }
                 }
                 if (!scv.is_undef())
                     proxy += ",skip-cert-verify=" + std::string(scv.get() ? "true" : "false");
