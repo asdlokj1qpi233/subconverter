@@ -2898,23 +2898,30 @@ proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json,
                 auto alpns = stringArrayToJsonArray(x.Alpn, ",", allocator);
                 tls.AddMember("alpn", alpns, allocator);
             }
-            tls.AddMember("insecure", buildBooleanValue(scv), allocator);
-            if (x.Type == ProxyType::VLESS && (!x.PublicKey.empty() || !x.ShortId.empty())) {
-                rapidjson::Value utls(rapidjson::kObjectType);
-                utls.AddMember("enabled", true, allocator);
-                utls.AddMember("fingerprint", rapidjson::StringRef("chrome"), allocator);
-                tls.AddMember("utls", utls, allocator);
-
-                rapidjson::Value reality(rapidjson::kObjectType);
-                reality.AddMember("enabled", true, allocator);
-                if (!x.PublicKey.empty())
-                    reality.AddMember("public_key", rapidjson::StringRef(x.PublicKey.c_str()), allocator);
-                reality.AddMember("short_id", rapidjson::StringRef(x.ShortId.empty() ? "" : x.ShortId.c_str()), allocator);
-                tls.AddMember("reality", reality, allocator);
+            // Reality 配置检查  
+            bool hasReality = false;  
+            if (x.Type == ProxyType::VLESS && (!x.PublicKey.empty() || !x.ShortId.empty())) {  
+                hasReality = true;  
+                rapidjson::Value utls(rapidjson::kObjectType);  
+                utls.AddMember("enabled", true, allocator);  
+                utls.AddMember("fingerprint", rapidjson::StringRef("chrome"), allocator);  
+                tls.AddMember("utls", utls, allocator);  
+  
+                rapidjson::Value reality(rapidjson::kObjectType);  
+                reality.AddMember("enabled", true, allocator);  
+                if (!x.PublicKey.empty())  
+                    reality.AddMember("public_key", rapidjson::StringRef(x.PublicKey.c_str()), allocator);  
+                reality.AddMember("short_id", rapidjson::StringRef(x.ShortId.empty() ? "" : x.ShortId.c_str()), allocator);  
+                tls.AddMember("reality", reality, allocator);  
+            }  
+      
+            // 只有在非 Reality 模式下才添加 insecure  
+            if (!hasReality) {  
+                tls.AddMember("insecure", buildBooleanValue(scv), allocator);
             }
         }
         proxy.AddMember("tls", tls, allocator);
-        }
+        
         if (!udp.is_undef() && !udp) {
             proxy.AddMember("network", "tcp", allocator);
         }
