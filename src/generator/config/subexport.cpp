@@ -2888,7 +2888,10 @@ proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json,
         }
         // 只有需要 TLS 配置的协议才添加（排除 Shadowsocks/SSR/AnyTLS）
         if (x.Type != ProxyType::Shadowsocks &&
-            x.Type != ProxyType::ShadowsocksR &&
+            x.Type != ProxyType::WireGuard &&
+            x.Type != ProxyType::Hysteria &&
+            x.Type != ProxyType::Hysteria2 &&
+            x.Type != ProxyType::TUIC &&
             x.Type != ProxyType::AnyTLS) {
 
             rapidjson::Value tls(rapidjson::kObjectType);
