@@ -2886,9 +2886,9 @@ proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json,
             default:
                 continue;
         }
+        rapidjson::Value tls(rapidjson::kObjectType);  
+        tls.AddMember("enabled", x.TLSSecure, allocator);
         if (x.TLSSecure) {
-            rapidjson::Value tls(rapidjson::kObjectType);
-            tls.AddMember("enabled", true, allocator);
             if (!x.ServerName.empty())
                 tls.AddMember("server_name", rapidjson::StringRef(x.ServerName.c_str()), allocator);
             if (!x.AlpnList.empty()) {
@@ -2899,27 +2899,21 @@ proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json,
                 tls.AddMember("alpn", alpns, allocator);
             }
             tls.AddMember("insecure", buildBooleanValue(scv), allocator);
-            if (x.Type == ProxyType::VLESS) {
+            if (x.Type == ProxyType::VLESS && (!x.PublicKey.empty() || !x.ShortId.empty())) {
+                rapidjson::Value utls(rapidjson::kObjectType);
+                utls.AddMember("enabled", true, allocator);
+                utls.AddMember("fingerprint", rapidjson::StringRef("chrome"), allocator);
+                tls.AddMember("utls", utls, allocator);
+
                 rapidjson::Value reality(rapidjson::kObjectType);
-                if (!x.PublicKey.empty() || !x.ShortId.empty()) {
-                    rapidjson::Value utls(rapidjson::kObjectType);
-                    utls.AddMember("enabled", true, allocator);
-                    utls.AddMember("fingerprint", rapidjson::StringRef("chrome"), allocator);
-                    tls.AddMember("utls", utls, allocator);
-                    reality.AddMember("enabled", true, allocator);
-                    if (!x.PublicKey.empty()) {
-                        reality.AddMember("public_key", rapidjson::StringRef(x.PublicKey.c_str()), allocator);
-                    }
-                    //                    auto shortIds = stringArrayToJsonArray(x.ShortId, ",", allocator);
-                    if (!x.ShortId.empty()) {
-                        reality.AddMember("short_id", rapidjson::StringRef(x.ShortId.c_str()), allocator);
-                    } else {
-                        reality.AddMember("short_id", rapidjson::StringRef(""), allocator);
-                    }
-                    tls.AddMember("reality", reality, allocator);
-                }
+                reality.AddMember("enabled", true, allocator);
+                if (!x.PublicKey.empty())
+                    reality.AddMember("public_key", rapidjson::StringRef(x.PublicKey.c_str()), allocator);
+                reality.AddMember("short_id", rapidjson::StringRef(x.ShortId.empty() ? "" : x.ShortId.c_str()), allocator);
+                tls.AddMember("reality", reality, allocator);
             }
-            proxy.AddMember("tls", tls, allocator);
+        }
+        proxy.AddMember("tls", tls, allocator);
         }
         if (!udp.is_undef() && !udp) {
             proxy.AddMember("network", "tcp", allocator);
