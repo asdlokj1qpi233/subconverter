@@ -40,7 +40,7 @@ void vlessConstruct(Proxy &node, const std::string &group, const std::string &re
                     const std::string &net, const std::string &cipher, const std::string &flow, const std::string &mode,
                     const std::string &path, const std::string &host, const std::string &edge, const std::string &tls,
                     const std::string &pkd, const std::string &sid, const std::string &fp, const std::string &sni,
-                    const std::vector<std::string> &alpnList,const std::string &packet_encoding,
+                    const std::vector<std::string> &alpnList,const std::string &packet_encoding, const std::string &encryption,
                     tribool udp = tribool(), tribool tfo = tribool(), tribool scv = tribool(),
                     tribool tls13 = tribool(),const std::string& underlying_proxy="",tribool v2ray_http_upgrade=tribool());
 
