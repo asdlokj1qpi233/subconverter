@@ -1,4 +1,4 @@
-name: GitHub CI
+name: GitHub CI_linux64
 on: 
   push:
     branches: [ master ]
