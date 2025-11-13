@@ -2927,9 +2927,9 @@ proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json,
                 }
 
                 // 非 Reality 模式才添加 insecure
-                if (!hasReality)
-                    tls.AddMember("insecure", buildBooleanValue(scv), allocator);
-            }
+                if (!hasReality && !scv.is_undef()) {  
+                    tls.AddMember("insecure", buildBooleanValue(scv), allocator);  
+                }
 
             proxy.AddMember("tls", tls, allocator);
         }
