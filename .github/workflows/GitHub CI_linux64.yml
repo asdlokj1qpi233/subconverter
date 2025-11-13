@@ -1,7 +1,7 @@
 name: GitHub CI_linux64
 on: 
   push:
-    branches: [ dev ]
+    branches: [ master ]
     tags:
       - '**'
   workflow_dispatch:
