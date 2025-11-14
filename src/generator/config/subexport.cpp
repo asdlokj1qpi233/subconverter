@@ -2887,48 +2887,37 @@ proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json,
                 continue;
         }
         // 只有需要 TLS 配置的协议才添加（排除 Shadowsocks/SSR/AnyTLS）
-        if (x.Type != ProxyType::Shadowsocks &&
-            x.Type != ProxyType::WireGuard &&
-            x.Type != ProxyType::Hysteria &&
-            x.Type != ProxyType::Hysteria2 &&
-            x.Type != ProxyType::TUIC &&
-            x.Type != ProxyType::AnyTLS) {
-
+        if (x.TLSSecure) {
             rapidjson::Value tls(rapidjson::kObjectType);
-            tls.AddMember("enabled", x.TLSSecure, allocator);
-
-            if (x.TLSSecure) {
-                if (!x.ServerName.empty())
-                    tls.AddMember("server_name", rapidjson::StringRef(x.ServerName.c_str()), allocator);
-
-                if (!x.AlpnList.empty()) {
-                    auto alpns = vectorToJsonArray(x.AlpnList, allocator);
-                    tls.AddMember("alpn", alpns, allocator);
-                } else if (!x.Alpn.empty()) {
-                    auto alpns = stringArrayToJsonArray(x.Alpn, ",", allocator);
-                    tls.AddMember("alpn", alpns, allocator);
-                }
-
-                // === Reality 检查 ===
-                bool hasReality = false;
-                if (x.Type == ProxyType::VLESS && (!x.PublicKey.empty() || !x.ShortId.empty())) {
-                    hasReality = true;
+            tls.AddMember("enabled", true, allocator);
+            if (!x.ServerName.empty())
+                tls.AddMember("server_name", rapidjson::StringRef(x.ServerName.c_str()), allocator);
+            if (!x.AlpnList.empty()) {
+                auto alpns = vectorToJsonArray(x.AlpnList, allocator);
+                tls.AddMember("alpn", alpns, allocator);
+            } else if (!x.Alpn.empty()) {
+                auto alpns = stringArrayToJsonArray(x.Alpn, ",", allocator);
+                tls.AddMember("alpn", alpns, allocator);
+            }
+            tls.AddMember("insecure", buildBooleanValue(scv), allocator);
+            if (x.Type == ProxyType::VLESS) {
+                rapidjson::Value reality(rapidjson::kObjectType);
+                if (!x.PublicKey.empty() || !x.ShortId.empty()) {
                     rapidjson::Value utls(rapidjson::kObjectType);
                     utls.AddMember("enabled", true, allocator);
                     utls.AddMember("fingerprint", rapidjson::StringRef("chrome"), allocator);
                     tls.AddMember("utls", utls, allocator);
-
-                    rapidjson::Value reality(rapidjson::kObjectType);
                     reality.AddMember("enabled", true, allocator);
-                    if (!x.PublicKey.empty())
+                    if (!x.PublicKey.empty()) {
                         reality.AddMember("public_key", rapidjson::StringRef(x.PublicKey.c_str()), allocator);
-                    reality.AddMember("short_id", rapidjson::StringRef(x.ShortId.empty() ? "" : x.ShortId.c_str()), allocator);
+                    }
+                    //                    auto shortIds = stringArrayToJsonArray(x.ShortId, ",", allocator);
+                    if (!x.ShortId.empty()) {
+                        reality.AddMember("short_id", rapidjson::StringRef(x.ShortId.c_str()), allocator);
+                    } else {
+                        reality.AddMember("short_id", rapidjson::StringRef(""), allocator);
+                    }
                     tls.AddMember("reality", reality, allocator);
-                }
-
-                // 非 Reality 模式才添加 insecure
-                if (!hasReality && !scv.is_undef()) {  
-                    tls.AddMember("insecure", buildBooleanValue(scv), allocator);  
                 }
             }
             proxy.AddMember("tls", tls, allocator);
