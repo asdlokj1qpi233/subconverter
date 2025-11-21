@@ -399,7 +399,7 @@ void explodeVmessConf(std::string content, std::vector<Proxy> &nodes) {
     std::string streamset = "streamSettings", tcpset = "tcpSettings", wsset = "wsSettings";
     regGetMatch(content, "((?i)streamsettings)", 2, 0, &streamset);
     regGetMatch(content, "((?i)tcpsettings)", 2, 0, &tcpset);
-    regGetMatch(content, "((?1)wssettings)", 2, 0, &wsset);
+    regGetMatch(content, "((?i)wssettings)", 2, 0, &wsset);
 
     json.Parse(content.data());
     if (json.HasParseError() || !json.IsObject())
