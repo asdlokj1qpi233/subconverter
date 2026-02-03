@@ -216,7 +216,7 @@ void anyTlSConstruct(Proxy &node, const std::string &group, const std::string &r
     node.Host = trim(host);
     node.Password = password;
     node.AlpnList = AlpnList;
-    node.SNI = sni;
+    node.ServerName = sni;
     node.Fingerprint = fingerprint;
     node.IdleSessionCheckInterval = idleSessionCheckInterval;
     node.IdleSessionTimeout = idleSessionTimeout;

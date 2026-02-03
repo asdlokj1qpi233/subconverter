@@ -572,7 +572,7 @@ proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGroupCo
                     singleproxy["udp"] = udp.get();
                 }
                 if (!x.ServerName.empty()) {
-                    singleproxy["sni"] = x.SNI;
+                    singleproxy["sni"] = x.ServerName;
                 }
                 if (!scv.is_undef())
                     singleproxy["skip-cert-verify"] = scv.get();
@@ -2883,8 +2883,8 @@ proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json,
                 if (!scv.is_undef()) {
                     tls.AddMember("insecure", buildBooleanValue(scv), allocator);
                 }
-                if (!x.SNI.empty())
-                    tls.AddMember("server_name", rapidjson::StringRef(x.SNI.c_str()), allocator);
+                if (!x.ServerName.empty())
+                    tls.AddMember("server_name", rapidjson::StringRef(x.ServerName.c_str()), allocator);
                 if (!x.AlpnList.empty()) {
                     auto alpns = vectorToJsonArray(x.AlpnList, allocator);
                     tls.AddMember("alpn", alpns, allocator);
