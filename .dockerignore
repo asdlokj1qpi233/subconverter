@@ -1,0 +1,21 @@
+# Build artifacts
+build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.a
+*.o
+subconverter
+
+# Git
+.git/
+
+# IDE / editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Scripts Dockerfile (we use root Dockerfile)
+scripts/Dockerfile

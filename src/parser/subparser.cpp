@@ -3343,7 +3343,13 @@ void explodeSub(std::string sub, std::vector<Proxy> &nodes) {
 
     //try to parse as normal subscription
     if (!processed) {
-        sub = urlSafeBase64Decode(sub);
+        // Check if content is already plaintext by detecting known proxy scheme prefixes.
+        // If the subscription contains proxy links directly (e.g. vmess://, ss://, trojan://),
+        // skip base64 decoding to avoid corrupting the content.
+        bool isPlaintext = regFind(sub, R"((vmess|vless|ss|ssr|trojan|hysteria2?|tuic|socks5?|https?|anytls|naive\+https?|mieru):\/\/)");
+        if (!isPlaintext) {
+            sub = urlSafeBase64Decode(sub);
+        }
         if (regFind(sub, "(vmess|shadowsocks|http|trojan)\\s*?=")) {
             if (explodeSurge(sub, nodes))
                 return;
