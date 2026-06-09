@@ -1003,7 +1003,9 @@ void explodeTrojan(std::string trojan, Proxy &node) {
     }
 
     else if (getUrlArg(addition, "type") == "grpc") {  
-        path = getUrlArg(addition, "serviceName");  
+        path = getUrlArg(addition, "serviceName");
+        if (path.substr(0, 3) == "%2F")
+            path = urlDecode(path);
         network = "grpc";  
     }
     
