@@ -31,7 +31,7 @@ void hysteria2Construct(Proxy &node, const std::string &group, const std::string
                         const std::string &port, const std::string &password, const std::string &host,
                         const std::string &up, const std::string &down, const std::string &alpn,
                         const std::string &obfsParam, const std::string &obfsPassword, const std::string &sni,
-                        const std::string &publicKey, const std::string &ports,
+                        const std::string &publicKey, const std::string &fingerprint, const std::string &ports,
                         tribool udp, tribool tfo,
                         tribool scv,const std::string& underlying_proxy="");
 
