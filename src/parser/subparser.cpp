@@ -1915,6 +1915,8 @@ void explodeStdVless(std::string vless, Proxy &node) {
 
     tls = getUrlArg(addition, "security");
     net = getUrlArg(addition, "type");
+    if (net.empty())
+        net = "tcp";
     flow = getUrlArg(addition, "flow");
     pbk = getUrlArg(addition, "pbk");
     sid = getUrlArg(addition, "sid");
