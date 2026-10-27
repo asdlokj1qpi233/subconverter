@@ -88,7 +88,7 @@ namespace toml
             {
                 const auto& extra_table = toml::find<toml::table>(v, "extra");
                 for(const auto& [k, val] : extra_table)
-                    conf.Extras[k] = toml::format(val);
+                    conf.Extras[k] = val.is_string() ? val.as_string() : toml::format(val);
             }
             return conf;
         }
