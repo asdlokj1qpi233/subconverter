@@ -1,4 +1,10 @@
 #include <string>
+#include <string_view>
+#include <set>
+#include <cctype>
+#include <cerrno>
+#include <climits>
+#include <cstdlib>
 
 #include "handler/settings.h"
 #include "utils/logger.h"
@@ -490,54 +496,381 @@ void rulesetToSurge(INIReader &base_rule, std::vector<RulesetContent> &ruleset_c
     }
 }
 
-static rapidjson::Value transformRuleToSingBox(std::vector<std::string_view> &args, const std::string& rule, const std::string &group, rapidjson::MemoryPoolAllocator<>& allocator)
+namespace
 {
-    args.clear();
-    split(args, rule, ',');
-    if (args.size() < 2) return rapidjson::Value(rapidjson::kObjectType);
-    auto type = toLower(std::string(args[0]));
-    auto value = toLower(std::string(args[1]));
-//    std::string_view option;
-//    if (args.size() >= 3) option = args[2];
-
-    rapidjson::Value rule_obj(rapidjson::kObjectType);
-    type = replaceAllDistinct(type, "-", "_");
-    type = replaceAllDistinct(type, "ip_cidr6", "ip_cidr");
-    type = replaceAllDistinct(type, "src_", "source_");
-    if (type == "match" || type == "final")
+struct SingBoxClashRule
+{
+    enum class Kind
     {
-        rule_obj.AddMember("outbound", rapidjson::Value(value.data(), value.size(), allocator), allocator);
+        Invalid,
+        Final,
+        Field,
+        Geo
+    };
+
+    Kind kind = Kind::Invalid;
+    std::string field;
+    std::string value;
+    std::string geo;
+    bool numeric = false;
+    bool scalar = false;
+};
+
+static bool isSingBoxRejectGroup(const std::string &group, const std::set<std::string> &reject_groups)
+{
+    return group == "REJECT" || group == "Reject" || reject_groups.find(group) != reject_groups.end();
+}
+
+static bool parseSingBoxInt(const std::string &value, int &result)
+{
+    if (value.empty())
+        return false;
+
+    char *end = nullptr;
+    errno = 0;
+    const long parsed = std::strtol(value.c_str(), &end, 10);
+    if (errno != 0 || end == value.c_str() || *end != '\0' || parsed < INT_MIN || parsed > INT_MAX)
+        return false;
+
+    result = static_cast<int>(parsed);
+    return true;
+}
+
+static SingBoxClashRule parseSingBoxClashRule(const std::string &line)
+{
+    SingBoxClashRule result;
+    std::vector<std::string_view> args;
+    split(args, line, ',');
+    if (args.size() < 2)
+        return result;
+
+    const std::string type = toUpper(trim(std::string(args[0])));
+    const std::string value = trim(std::string(args[1]));
+    if (value.empty())
+        return result;
+
+    if (type == "MATCH" || type == "FINAL")
+    {
+        result.kind = SingBoxClashRule::Kind::Final;
+        result.value = value;
+        return result;
+    }
+
+    if (type == "GEOIP" || type == "SRC-GEOIP" || type == "GEOSITE")
+    {
+        result.kind = SingBoxClashRule::Kind::Geo;
+        result.geo = toLower(type);
+        result.value = value;
+        return result;
+    }
+
+    auto set_field = [&](const char *field, bool numeric = false, bool scalar = false)
+    {
+        result.kind = SingBoxClashRule::Kind::Field;
+        result.field = field;
+        result.value = value;
+        result.numeric = numeric;
+        result.scalar = scalar;
+    };
+
+    if (type == "DOMAIN")
+        set_field("domain");
+    else if (type == "DOMAIN-SUFFIX")
+        set_field("domain_suffix");
+    else if (type == "DOMAIN-KEYWORD")
+        set_field("domain_keyword");
+    else if (type == "DOMAIN-REGEX")
+        set_field("domain_regex");
+    else if (type == "IP-CIDR" || type == "IP-CIDR6")
+        set_field("ip_cidr");
+    else if (type == "SRC-IP-CIDR" || type == "SRC-IP-CIDR6" || type == "SRC-IP")
+        set_field("source_ip_cidr");
+    else if (type == "DST-PORT" || type == "PORT")
+        set_field("port", true);
+    else if (type == "SRC-PORT")
+        set_field("source_port", true);
+    else if (type == "PORT-RANGE")
+        set_field("port_range");
+    else if (type == "SRC-PORT-RANGE")
+        set_field("source_port_range");
+    else if (type == "PROCESS-NAME")
+        set_field("process_name");
+    else if (type == "PROCESS-PATH")
+        set_field("process_path");
+    else if (type == "PROCESS-PATH-REGEX")
+        set_field("process_path_regex");
+    else if (type == "PACKAGE-NAME")
+        set_field("package_name");
+    else if (type == "PACKAGE-NAME-REGEX")
+        set_field("package_name_regex");
+    else if (type == "INBOUND")
+        set_field("inbound");
+    else if (type == "PROTOCOL")
+        set_field("protocol");
+    else if (type == "NETWORK")
+        set_field("network");
+    else if (type == "IP-VERSION")
+    {
+        if (value == "4" || value == "6")
+            set_field("ip_version", true, true);
+    }
+    else if (type == "USER")
+        set_field("user");
+    else if (type == "USER-ID" || type == "UID")
+        set_field("user_id", true);
+
+    if (result.kind == SingBoxClashRule::Kind::Field && result.field == "port_range")
+    {
+        result.value = replaceAllDistinct(result.value, "-", ":");
+    }
+    else if (result.kind == SingBoxClashRule::Kind::Field && result.field == "source_port_range")
+    {
+        result.value = replaceAllDistinct(result.value, "-", ":");
+    }
+
+    return result;
+}
+
+static bool isSafeSingBoxRuleSetCode(const std::string &code)
+{
+    if (code.empty())
+        return false;
+
+    for (const unsigned char c : code)
+    {
+        if (!std::isalnum(c) && c != '-' && c != '_' && c != '.' && c != '@' && c != '!')
+            return false;
+    }
+    return true;
+}
+
+static void ensureSingBoxRouteObject(rapidjson::Document &doc, rapidjson::MemoryPoolAllocator<> &allocator)
+{
+    if (!doc.HasMember("route"))
+    {
+        doc.AddMember("route", rapidjson::Value(rapidjson::kObjectType), allocator);
+        return;
+    }
+
+    if (!doc["route"].IsObject())
+        doc["route"].SetObject();
+}
+
+static void ensureSingBoxRuleSet(rapidjson::Document &doc, const std::string &tag,
+                                 rapidjson::MemoryPoolAllocator<> &allocator)
+{
+    ensureSingBoxRouteObject(doc, allocator);
+    rapidjson::Value &route = doc["route"];
+
+    if (!route.HasMember("rule_set"))
+        route.AddMember("rule_set", rapidjson::Value(rapidjson::kArrayType), allocator);
+    else if (!route["rule_set"].IsArray())
+        route["rule_set"].SetArray();
+
+    rapidjson::Value &sets = route["rule_set"];
+    for (rapidjson::SizeType i = 0; i < sets.Size(); ++i)
+    {
+        if (sets[i].IsObject() && sets[i].HasMember("tag") && sets[i]["tag"].IsString() &&
+            std::string(sets[i]["tag"].GetString()) == tag)
+            return;
+    }
+
+    std::string url;
+    if (startsWith(tag, "geoip-"))
+        url = "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/" + tag + ".srs";
+    else if (startsWith(tag, "geosite-"))
+        url = "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/" + tag + ".srs";
+    else
+    {
+        writeLog(0, "Unsupported sing-box rule-set tag: " + tag, LOG_LEVEL_WARNING);
+        return;
+    }
+
+    rapidjson::Value item(rapidjson::kObjectType);
+    item.AddMember("type", "remote", allocator);
+    item.AddMember("tag", rapidjson::Value(tag.c_str(), allocator), allocator);
+    item.AddMember("format", "binary", allocator);
+    item.AddMember("url", rapidjson::Value(url.c_str(), allocator), allocator);
+
+    rapidjson::Value http_client(rapidjson::kObjectType);
+    http_client.AddMember("detour", "DIRECT", allocator);
+    item.AddMember("http_client", http_client, allocator);
+
+    sets.PushBack(item, allocator);
+}
+
+static void addSingBoxRuleAction(rapidjson::Value &rule, const std::string &group, bool reject,
+                                 rapidjson::MemoryPoolAllocator<> &allocator)
+{
+    if (reject)
+    {
+        rule.AddMember("action", "reject", allocator);
+        rule.AddMember("method", "drop", allocator);
+        return;
+    }
+
+    rule.AddMember("action", "route", allocator);
+    rule.AddMember("outbound",
+                   rapidjson::Value(group.empty() ? "DIRECT" : group.c_str(), allocator), allocator);
+}
+
+static bool appendSingBoxGeoRule(rapidjson::Document &doc, rapidjson::Value &rules,
+                                 const std::string &geo_type, const std::string &raw_value,
+                                 const std::string &group, bool reject,
+                                 rapidjson::MemoryPoolAllocator<> &allocator)
+{
+    std::string value = toLower(trim(raw_value));
+    bool invert = false;
+    if (!value.empty() && value[0] == '!')
+    {
+        invert = true;
+        value.erase(0, 1);
+    }
+
+    if (value.empty())
+        return false;
+
+    const bool source = geo_type == "src-geoip";
+    rapidjson::Value rule(rapidjson::kObjectType);
+
+    if (geo_type == "geosite")
+    {
+        if (!isSafeSingBoxRuleSetCode(value))
+            return false;
+
+        const std::string tag = "geosite-" + value;
+        ensureSingBoxRuleSet(doc, tag, allocator);
+        rapidjson::Value rule_sets(rapidjson::kArrayType);
+        rule_sets.PushBack(rapidjson::Value(tag.c_str(), allocator), allocator);
+        rule.AddMember("rule_set", rule_sets, allocator);
     }
     else
     {
-        rule_obj.AddMember(rapidjson::Value(type.c_str(), allocator), rapidjson::Value(value.data(), value.size(), allocator), allocator);
-        rule_obj.AddMember("outbound", rapidjson::Value(group.c_str(), allocator), allocator);
+        if (value == "lan" || value == "private")
+        {
+            rule.AddMember(rapidjson::StringRef(source ? "source_ip_is_private" : "ip_is_private"),
+                           rapidjson::Value(true), allocator);
+        }
+        else
+        {
+            if (!isSafeSingBoxRuleSetCode(value))
+                return false;
+
+            const std::string tag = "geoip-" + value;
+            ensureSingBoxRuleSet(doc, tag, allocator);
+            rapidjson::Value rule_sets(rapidjson::kArrayType);
+            rule_sets.PushBack(rapidjson::Value(tag.c_str(), allocator), allocator);
+            rule.AddMember("rule_set", rule_sets, allocator);
+            if (source)
+                rule.AddMember("rule_set_ip_cidr_match_source", true, allocator);
+        }
     }
-    return rule_obj;
+
+    if (invert)
+        rule.AddMember("invert", true, allocator);
+
+    addSingBoxRuleAction(rule, group, reject, allocator);
+    rules.PushBack(rule, allocator);
+    return true;
 }
 
-static void appendSingBoxRule(std::vector<std::string_view> &args, rapidjson::Value &rules, const std::string& rule, rapidjson::MemoryPoolAllocator<>& allocator)
+static bool appendSingBoxFieldRule(rapidjson::Value &rules, const SingBoxClashRule &parsed,
+                                   const std::string &group, bool reject,
+                                   rapidjson::MemoryPoolAllocator<> &allocator)
 {
-    using namespace rapidjson_ext;
-    args.clear();
-    split(args, rule, ',');
-    if (args.size() < 2) return;
-    auto type = args[0];
-//    std::string_view option;
-//    if (args.size() >= 3) option = args[2];
+    rapidjson::Value rule(rapidjson::kObjectType);
 
-    if (none_of(SingBoxRuleTypes, [&](const std::string& t){ return type == t; }))
+    if (parsed.numeric)
+    {
+        int number = 0;
+        if (!parseSingBoxInt(parsed.value, number))
+            return false;
+        rule.AddMember(rapidjson::Value(parsed.field.c_str(), allocator), rapidjson::Value(number),
+                       allocator);
+    }
+    else
+    {
+        rule.AddMember(rapidjson::Value(parsed.field.c_str(), allocator),
+                       rapidjson::Value(parsed.value.c_str(), parsed.value.size(), allocator), allocator);
+    }
+
+    addSingBoxRuleAction(rule, group, reject, allocator);
+    rules.PushBack(rule, allocator);
+    return true;
+}
+
+static void ensureSingBoxSystemRules(rapidjson::Value &rules,
+                                     rapidjson::MemoryPoolAllocator<> &allocator)
+{
+    bool has_sniff = false;
+    bool has_hijack_dns = false;
+
+    if (rules.IsArray())
+    {
+        for (rapidjson::SizeType i = 0; i < rules.Size(); ++i)
+        {
+            if (!rules[i].IsObject() || !rules[i].HasMember("action") || !rules[i]["action"].IsString())
+                continue;
+
+            const std::string action = rules[i]["action"].GetString();
+            if (action == "sniff")
+                has_sniff = true;
+            else if (action == "hijack-dns")
+                has_hijack_dns = true;
+        }
+    }
+    else
+    {
+        rules.SetArray();
+    }
+
+    if (has_sniff && has_hijack_dns)
         return;
 
-    auto realType = toLower(std::string(type));
-    auto value = toLower(std::string(args[1]));
-    realType = replaceAllDistinct(realType, "-", "_");
-    realType = replaceAllDistinct(realType, "ip_cidr6", "ip_cidr");
+    rapidjson::Value result(rapidjson::kArrayType);
+    if (!has_sniff)
+        result.PushBack(buildObject(allocator, "action", "sniff"), allocator);
+    if (!has_hijack_dns)
+        result.PushBack(buildObject(allocator, "protocol", "dns", "action", "hijack-dns"), allocator);
 
-    rules | AppendToArray(realType.c_str(), rapidjson::Value(value.c_str(), value.size(), allocator), allocator);
+    for (rapidjson::SizeType i = 0; i < rules.Size(); ++i)
+        result.PushBack(rules[i], allocator);
+
+    rules.Swap(result);
 }
 
-void rulesetToSingBox(rapidjson::Document &base_rule, std::vector<RulesetContent> &ruleset_content_array, bool overwrite_original_rules)
+static void setSingBoxDefaultDomainResolver(rapidjson::Document &doc,
+                                            rapidjson::MemoryPoolAllocator<> &allocator)
+{
+    ensureSingBoxRouteObject(doc, allocator);
+    rapidjson::Value &route = doc["route"];
+    if (route.HasMember("default_domain_resolver"))
+        return;
+
+    bool found = false;
+    if (doc.HasMember("dns") && doc["dns"].IsObject() && doc["dns"].HasMember("servers") &&
+        doc["dns"]["servers"].IsArray())
+    {
+        const rapidjson::Value &servers = doc["dns"]["servers"];
+        for (rapidjson::SizeType i = 0; i < servers.Size(); ++i)
+        {
+            if (!servers[i].IsObject() || !servers[i].HasMember("tag") || !servers[i]["tag"].IsString())
+                continue;
+            if (std::string(servers[i]["tag"].GetString()) == "dns_resolver")
+            {
+                found = true;
+                break;
+            }
+        }
+    }
+
+    if (found)
+        route.AddMember("default_domain_resolver", "dns_resolver", allocator);
+}
+} // namespace
+
+void rulesetToSingBox(rapidjson::Document &base_rule, std::vector<RulesetContent> &ruleset_content_array,
+                      bool overwrite_original_rules, const std::set<std::string> &reject_groups)
 {
     using namespace rapidjson_ext;
     std::string rule_group, retrieved_rules, strLine, final;
@@ -548,79 +881,192 @@ void rulesetToSingBox(rapidjson::Document &base_rule, std::vector<RulesetContent
     rapidjson::Value rules(rapidjson::kArrayType);
     if (!overwrite_original_rules)
     {
-        if (base_rule.HasMember("route") && base_rule["route"].HasMember("rules") && base_rule["route"]["rules"].IsArray())
+        if (base_rule.HasMember("route") && base_rule["route"].IsObject() &&
+            base_rule["route"].HasMember("rules") && base_rule["route"]["rules"].IsArray())
             rules.Swap(base_rule["route"]["rules"]);
     }
 
     if (global.singBoxAddClashModes)
     {
-        auto global_object = buildObject(allocator, "clash_mode", "Global", "outbound", "GLOBAL");
-        auto direct_object = buildObject(allocator, "clash_mode", "Direct", "outbound", "DIRECT");
-        rules.PushBack(global_object, allocator);
-        rules.PushBack(direct_object, allocator);
+        rules.PushBack(buildObject(allocator, "clash_mode", "Global", "action", "route", "outbound", "GLOBAL"),
+                       allocator);
+        rules.PushBack(buildObject(allocator, "clash_mode", "Direct", "action", "route", "outbound", "DIRECT"),
+                       allocator);
     }
 
-    // auto dns_object = buildObject(allocator, "protocol", "dns", "outbound", "dns-out");
-    // rules.PushBack(dns_object, allocator);
-
-    std::vector<std::string_view> temp(4);
-    for(RulesetContent &x : ruleset_content_array)
+    for (RulesetContent &x : ruleset_content_array)
     {
-        if(global.maxAllowedRules && total_rules > global.maxAllowedRules)
+        if (global.maxAllowedRules && total_rules > global.maxAllowedRules)
             break;
+
         rule_group = x.rule_group;
         retrieved_rules = x.rule_content.get();
-        if(retrieved_rules.empty())
+        if (retrieved_rules.empty())
         {
             writeLog(0, "Failed to fetch ruleset or ruleset is empty: '" + x.rule_path + "'!", LOG_LEVEL_WARNING);
             continue;
         }
-        if(startsWith(retrieved_rules, "[]"))
+
+        const bool reject = isSingBoxRejectGroup(rule_group, reject_groups);
+
+        if (startsWith(retrieved_rules, "[]"))
         {
             strLine = retrieved_rules.substr(2);
-            if(startsWith(strLine, "FINAL") || startsWith(strLine, "MATCH"))
+            if (startsWith(strLine, "FINAL") || startsWith(strLine, "MATCH"))
             {
                 final = rule_group;
                 continue;
             }
-            rules.PushBack(transformRuleToSingBox(temp, strLine, rule_group, allocator), allocator);
-            total_rules++;
+            const SingBoxClashRule parsed = parseSingBoxClashRule(strLine);
+            if (parsed.kind == SingBoxClashRule::Kind::Final)
+            {
+                final = rule_group;
+                continue;
+            }
+            if (parsed.kind == SingBoxClashRule::Kind::Geo)
+            {
+                if (appendSingBoxGeoRule(base_rule, rules, parsed.geo, parsed.value, rule_group, reject,
+                                         allocator))
+                    total_rules++;
+                continue;
+            }
+            if (parsed.kind == SingBoxClashRule::Kind::Field)
+            {
+                if (appendSingBoxFieldRule(rules, parsed, rule_group, reject, allocator))
+                    total_rules++;
+                continue;
+            }
             continue;
         }
+
         retrieved_rules = convertRuleset(retrieved_rules, x.rule_type);
-        char delimiter = getLineBreak(retrieved_rules);
+        const char delimiter = getLineBreak(retrieved_rules);
 
         strStrm.clear();
-        strStrm<<retrieved_rules;
+        strStrm << retrieved_rules;
 
-        std::string::size_type lineSize;
-        rapidjson::Value rule(rapidjson::kObjectType);
+        rapidjson::Value pending(rapidjson::kObjectType);
+        std::string pending_field;
 
-        while(getline(strStrm, strLine, delimiter))
+        auto flush_pending = [&]()
         {
-            if(global.maxAllowedRules && total_rules > global.maxAllowedRules)
+            if (pending.ObjectEmpty())
+                return;
+
+            addSingBoxRuleAction(pending, rule_group, reject, allocator);
+            rules.PushBack(pending, allocator);
+            pending = rapidjson::Value(rapidjson::kObjectType);
+            pending_field.clear();
+        };
+
+        while (getline(strStrm, strLine, delimiter))
+        {
+            if (global.maxAllowedRules && total_rules > global.maxAllowedRules)
                 break;
-            strLine = trimWhitespace(strLine, true, true); //remove whitespaces
-            lineSize = strLine.size();
-            if(!lineSize || strLine[0] == ';' || strLine[0] == '#' || (lineSize >= 2 && strLine[0] == '/' && strLine[1] == '/')) //empty lines and comments are ignored
+
+            strLine = trimWhitespace(strLine, true, true);
+            const std::string::size_type lineSize = strLine.size();
+            if (!lineSize || strLine[0] == ';' || strLine[0] == '#' ||
+                (lineSize >= 2 && strLine[0] == '/' && strLine[1] == '/'))
                 continue;
-            if(strFind(strLine, "//"))
+            if (strFind(strLine, "//"))
             {
                 strLine.erase(strLine.find("//"));
                 strLine = trimWhitespace(strLine);
             }
-            appendSingBoxRule(temp, rule, strLine, allocator);
+
+            if (strLine == "FINAL" || strLine == "MATCH")
+            {
+                final = rule_group;
+                continue;
+            }
+
+            const SingBoxClashRule parsed = parseSingBoxClashRule(strLine);
+            if (parsed.kind == SingBoxClashRule::Kind::Final)
+            {
+                final = rule_group;
+                continue;
+            }
+            if (parsed.kind == SingBoxClashRule::Kind::Geo)
+            {
+                flush_pending();
+                if (appendSingBoxGeoRule(base_rule, rules, parsed.geo, parsed.value, rule_group, reject,
+                                         allocator))
+                    total_rules++;
+                continue;
+            }
+            if (parsed.kind != SingBoxClashRule::Kind::Field)
+                continue;
+
+            if (parsed.scalar)
+            {
+                flush_pending();
+                if (appendSingBoxFieldRule(rules, parsed, rule_group, reject, allocator))
+                    total_rules++;
+                continue;
+            }
+
+            if (pending_field != parsed.field)
+                flush_pending();
+
+            pending_field = parsed.field;
+
+            if (parsed.numeric)
+            {
+                int number = 0;
+                if (!parseSingBoxInt(parsed.value, number))
+                    continue;
+
+                if (!pending.HasMember(parsed.field.c_str()))
+                    pending.AddMember(rapidjson::Value(parsed.field.c_str(), allocator),
+                                      rapidjson::Value(rapidjson::kArrayType), allocator);
+                pending[parsed.field.c_str()].PushBack(number, allocator);
+            }
+            else
+            {
+                if (!pending.HasMember(parsed.field.c_str()))
+                    pending.AddMember(rapidjson::Value(parsed.field.c_str(), allocator),
+                                      rapidjson::Value(rapidjson::kArrayType), allocator);
+                pending[parsed.field.c_str()].PushBack(
+                        rapidjson::Value(parsed.value.c_str(), parsed.value.size(), allocator), allocator);
+            }
+
+            total_rules++;
         }
-        if (rule.ObjectEmpty()) continue;
-        rule.AddMember("outbound", rapidjson::Value(rule_group.c_str(), allocator), allocator);
-        rules.PushBack(rule, allocator);
+
+        flush_pending();
     }
 
-    if (!base_rule.HasMember("route"))
-        base_rule.AddMember("route", rapidjson::Value(rapidjson::kObjectType), allocator);
+    if (final.empty() && base_rule.HasMember("route") && base_rule["route"].IsObject() &&
+        base_rule["route"].HasMember("final") && base_rule["route"]["final"].IsString())
+        final = base_rule["route"]["final"].GetString();
 
-    auto finalValue = rapidjson::Value(final.c_str(), allocator);
-    base_rule["route"]
-    | AddMemberOrReplace("rules", rules, allocator)
-    | AddMemberOrReplace("final", finalValue, allocator);
+    if (!final.empty() && isSingBoxRejectGroup(final, reject_groups))
+    {
+        rapidjson::Value catch_all(rapidjson::kObjectType);
+        catch_all.AddMember("action", "reject", allocator);
+        catch_all.AddMember("method", "drop", allocator);
+        rules.PushBack(catch_all, allocator);
+
+        if (final == "REJECT" || final == "Reject")
+            final = "DIRECT";
+    }
+
+    ensureSingBoxSystemRules(rules, allocator);
+    ensureSingBoxRouteObject(base_rule, allocator);
+
+    rapidjson::Value &route = base_rule["route"];
+    if (route.HasMember("rules"))
+        route["rules"].Swap(rules);
+    else
+        route.AddMember("rules", rules, allocator);
+
+    if (!final.empty())
+        route | AddMemberOrReplace("final", rapidjson::Value(final.c_str(), allocator), allocator);
+    else if (!route.HasMember("final"))
+        route.AddMember("final", "DIRECT", allocator);
+    else if (route["final"].IsString() && std::string(route["final"].GetString()).empty())
+        route["final"].SetString("DIRECT", allocator);
+
+    setSingBoxDefaultDomainResolver(base_rule, allocator);
 }

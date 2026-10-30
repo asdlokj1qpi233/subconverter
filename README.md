@@ -76,6 +76,12 @@ Notice:
 
    - https://t.me/http?server=1.2.3.4&port=233&user=user&pass=pass&remark=Example
 
+3. The `singbox` target generates configuration for **sing-box 1.14.x**. Legacy DNS servers, legacy inbound fields, `geoip`/`geosite` route fields, and WireGuard outbounds are no longer emitted. Since modern sing-box selectors cannot contain `REJECT`, reject-only Clash groups are converted to static `action: "reject"` rules.
+
+4. Clash Hysteria/Hysteria2 `fingerprint` is a certificate DER SHA-256, while sing-box 1.14 only supports SPKI public-key SHA-256 (`certificate_public_key_sha256`). The two hashes are not interchangeable, so the pin is not emitted. Instead, `tls.insecure` is enabled **only for that node** when it carries a certificate fingerprint or `skip-cert-verify: true`, so the remaining nodes keep certificate verification. REALITY outbounds never receive `insecure`. An explicit `&scv=true` forces `insecure` for every TLS outbound, while `&scv=false` disables both the per-node fallback and the upstream flag.
+
+5. sing-box configurations are also accepted as source subscriptions, including modern `endpoints` (WireGuard), `httpupgrade` transports, and `server_ports`.
+
 
 ---
 

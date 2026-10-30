@@ -152,6 +152,12 @@
 
 4.  目标类型为 `auto` 时，会根据请求的 `User-Agent` 自动判断输出的目标类型，匹配规则可参见 [此处](https://github.com/tindy2013/subconverter/blob/master/src/handler/interfaces.cpp#L121) （该链接有可能因为代码修改而不能准确指向相应的代码）
 
+5.  目标类型为 `singbox` 时，生成适用于 **sing-box 1.14.x** 的配置。已不再生成旧版 DNS、旧版 inbound 字段、`geoip`/`geosite` 路由字段以及 WireGuard outbound。由于新版 sing-box 的 selector 不能包含 `REJECT`，仅用于拦截的 Clash 策略组会被转换为静态的 `action: "reject"` 规则。
+
+6.  Clash 的 Hysteria/Hysteria2 `fingerprint` 是证书 DER 的 SHA-256，而 sing-box 1.14 只支持 SPKI 公钥的 SHA-256（`certificate_public_key_sha256`），两者不能互相转换，因此不会输出证书 pin。作为替代，带证书指纹或 `skip-cert-verify: true` 的节点会**单独**开启 `tls.insecure`，其余节点继续校验证书；REALITY 节点始终不会输出 `insecure`。显式传入 `&scv=true` 会为所有 TLS outbound 强制开启 `insecure`，而 `&scv=false` 会同时关闭按节点推断和源订阅中的标记。
+
+7.  sing-box 配置也可以作为订阅输入源，支持现代 `endpoints`（WireGuard）、`httpupgrade` 传输和 `server_ports` 端口段。
+
 * * *
 
 ## 简易用法
@@ -332,7 +338,7 @@ http://127.0.0.1:25500/sub?target=%TARGET%&url=%URL%&emoji=%EMOJI%····
 | sort_script   |  可选 | 详见下文 `sort_script`        | 用于自定义排序的js代码，需要经过 [URLEncode](https://www.urlencoder.org/) 处理，会覆盖配置文件里的设置。出于安全考虑，链接需包含正确的 `token` 参数，才会应用该设置                                                                                                |
 | script        |  可选 | true / false              | 用于生成Clash Script，默认为 false                                                                                                                                                                                  |
 | insert        |  可选 | true / false              | 用于设置是否将配置文件中的 `insert_url` 插入，默认为 true                                                                                                                                                                      |
-| scv           |  可选 | true / false              | 用于关闭 TLS 节点的证书检查，默认为 false                                                                                                                                                                                  |
+| scv           |  可选 | true / false              | 全局证书校验开关：true 为所有 TLS 节点关闭校验，false 为全部强制校验；不传时按节点自动判断（源订阅的 `skip-cert-verify`，或带证书指纹的 Hysteria/Hysteria2）。REALITY 节点始终不输出 `insecure`                                                                        |
 | fdn           |  可选 | true / false              | 用于过滤目标类型不支持的节点，默认为 true                                                                                                                                                                                     |
 | expand        |  可选 | true / false              | 用于在 API 端处理或转换 Surge, QuantumultX, Clash 的规则列表，即是否将规则全文置入订阅中，默认为 true，设置为 false 则不会将规则全文写进订阅                                                                                                                |
 | append_info   |  可选 | true / false              | 用于输出包含流量或到期信息的节点, 默认为 true，设置为 false 则取消输出                                                                                                                                                                  |
