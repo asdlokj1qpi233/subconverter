@@ -1,5 +1,7 @@
 #include <string>
 #include <map>
+#include <algorithm>
+#include <cctype>
 
 #include "utils/base64/base64.h"
 #include "utils/ini_reader/ini_reader.h"
@@ -2972,6 +2974,22 @@ void explodeNetchConf(std::string netch, std::vector<Proxy> &nodes) {
 int explodeConfContent(const std::string &content, std::vector<Proxy> &nodes) {
     ConfType filetype = ConfType::Unknow;
 
+    // sing-box configurations may contain a "version" field (for example in a
+    // SOCKS outbound) and must be detected before the legacy config heuristics.
+    if (strFind(content, "\"outbounds\"") || strFind(content, "\"endpoints\"")) {
+        const std::string trimmed = trimWhitespace(content, true, true);
+        if (!trimmed.empty() && trimmed[0] == '{') {
+            try {
+                const std::size_t before = nodes.size();
+                explodeSub(content, nodes);
+                if (nodes.size() > before)
+                    return true;
+            } catch (std::exception &) {
+                // fall through to the legacy configuration parsers
+            }
+        }
+    }
+
     if (strFind(content, "\"version\""))
         filetype = ConfType::SS;
     else if (strFind(content, "\"serverSubscribes\""))
@@ -3014,291 +3032,529 @@ int explodeConfContent(const std::string &content, std::vector<Proxy> &nodes) {
     return !nodes.empty();
 }
 
-void explodeSingboxTransport(rapidjson::Value &singboxNode, std::string &net, std::string &host, std::string &path,
-                             std::string edge) {
-    if (singboxNode.HasMember("transport") && singboxNode["transport"].IsObject()) {
-        rapidjson::Value transport = singboxNode["transport"].GetObject();
-        net = GetMember(transport, "type");
-        switch (hash_(net)) {
-            case "http"_hash: {
-                host = GetMember(transport, "host");
-                break;
-            }
-            case "ws"_hash: {
-                path = GetMember(transport, "path");
-                if (transport.HasMember("headers") && transport["headers"].IsObject()) {
-                    rapidjson::Value headers = transport["headers"].GetObject();
-                    host = GetMember(headers, "Host");
-                    edge = GetMember(headers, "Edge");
-                }
-                break;
-            }
-            case "grpc"_hash: {
-                path = GetMember(transport, "service_name");
-                break;
-            }
-            default:
-                net = "tcp";
-                path.clear();
-                break;
-        }
-    } else {
+static bool isSingBoxNodeType(const std::string &type) {
+    static const string_array types = {
+            "shadowsocks", "vmess", "vless", "trojan", "wireguard", "http", "socks",
+            "hysteria", "hysteria2", "tuic", "anytls"
+    };
+    return std::find(types.begin(), types.end(), type) != types.end();
+}
+
+static std::string getSingBoxString(const rapidjson::Value &value, const char *member) {
+    if (!value.IsObject() || !value.HasMember(member))
+        return "";
+
+    const rapidjson::Value &item = value[member];
+    if (item.IsString())
+        return item.GetString();
+    if (item.IsArray() && !item.Empty() && item[0].IsString())
+        return item[0].GetString();
+
+    std::string result;
+    item >> result;
+    return result;
+}
+
+static std::string getSingBoxStringArrayJoined(const rapidjson::Value &value, const char *member) {
+    if (!value.IsObject() || !value.HasMember(member))
+        return "";
+
+    const rapidjson::Value &item = value[member];
+    if (item.IsString())
+        return item.GetString();
+    if (!item.IsArray())
+        return "";
+
+    std::string result;
+    for (rapidjson::SizeType i = 0; i < item.Size(); ++i) {
+        std::string part;
+        item[i] >> part;
+        if (part.empty())
+            continue;
+        if (!result.empty())
+            result += ",";
+        result += part;
+    }
+    return result;
+}
+
+static void explodeSingboxTransport(rapidjson::Value &singboxNode, std::string &net, std::string &host,
+                                    std::string &path, std::string &edge, bool &http_upgrade) {
+    http_upgrade = false;
+    if (!singboxNode.HasMember("transport") || !singboxNode["transport"].IsObject()) {
         net = "tcp";
         host.clear();
-        edge.clear();
         path.clear();
+        edge.clear();
+        return;
     }
+
+    rapidjson::Value &transport = singboxNode["transport"];
+    net = GetMember(transport, "type");
+    switch (hash_(net)) {
+        case "http"_hash: {
+            host = getSingBoxString(transport, "host");
+            path = GetMember(transport, "path");
+            if (host.empty() && transport.HasMember("headers") && transport["headers"].IsObject()) {
+                rapidjson::Value &headers = transport["headers"];
+                host = GetMember(headers, "Host");
+                if (host.empty())
+                    host = GetMember(headers, "host");
+            }
+            break;
+        }
+        case "ws"_hash: {
+            path = GetMember(transport, "path");
+            if (path.empty())
+                path = "/";
+            if (transport.HasMember("headers") && transport["headers"].IsObject()) {
+                rapidjson::Value &headers = transport["headers"];
+                host = GetMember(headers, "Host");
+                if (host.empty())
+                    host = GetMember(headers, "host");
+                edge = GetMember(headers, "Edge");
+            }
+            break;
+        }
+        case "httpupgrade"_hash: {
+            net = "ws";
+            http_upgrade = true;
+            path = GetMember(transport, "path");
+            if (path.empty())
+                path = "/";
+            host = getSingBoxString(transport, "host");
+            if (transport.HasMember("headers") && transport["headers"].IsObject()) {
+                rapidjson::Value &headers = transport["headers"];
+                if (host.empty()) {
+                    host = GetMember(headers, "Host");
+                    if (host.empty())
+                        host = GetMember(headers, "host");
+                }
+                edge = GetMember(headers, "Edge");
+            }
+            break;
+        }
+        case "grpc"_hash: {
+            path = GetMember(transport, "service_name");
+            break;
+        }
+        case "quic"_hash:
+            net = "quic";
+            break;
+        default:
+            net = "tcp";
+            host.clear();
+            path.clear();
+            edge.clear();
+            break;
+    }
+}
+
+static void explodeSingboxEndpoint(rapidjson::Value &endpoint, std::vector<Proxy> &nodes) {
+    if (!endpoint.IsObject() || GetMember(endpoint, "type") != "wireguard")
+        return;
+
+    std::string ps = GetMember(endpoint, "tag");
+    std::string private_key = GetMember(endpoint, "private_key");
+    std::string mtu = GetMember(endpoint, "mtu");
+    std::string underlying_proxy = GetMember(endpoint, "detour");
+
+    std::string ip;
+    std::string ipv6;
+    auto add_address = [&](std::string address) {
+        const std::string::size_type slash = address.find('/');
+        if (slash != std::string::npos)
+            address.erase(slash);
+        if (address.find(':') != std::string::npos) {
+            if (ipv6.empty())
+                ipv6 = address;
+        } else if (ip.empty()) {
+            ip = address;
+        }
+    };
+
+    if (endpoint.HasMember("address")) {
+        const rapidjson::Value &addresses = endpoint["address"];
+        if (addresses.IsString()) {
+            add_address(addresses.GetString());
+        } else if (addresses.IsArray()) {
+            for (rapidjson::SizeType i = 0; i < addresses.Size(); ++i) {
+                if (addresses[i].IsString())
+                    add_address(addresses[i].GetString());
+            }
+        }
+    }
+
+    std::string server;
+    std::string port;
+    std::string public_key;
+    std::string pre_shared_key;
+    std::string allowed_ips;
+    std::string reserved;
+    std::string keepalive;
+
+    if (endpoint.HasMember("peers") && endpoint["peers"].IsArray() && !endpoint["peers"].Empty() &&
+        endpoint["peers"][0].IsObject()) {
+        const rapidjson::Value &peer = endpoint["peers"][0];
+        server = GetMember(peer, "address");
+        port = GetMember(peer, "port");
+        public_key = GetMember(peer, "public_key");
+        pre_shared_key = GetMember(peer, "pre_shared_key");
+        allowed_ips = getSingBoxStringArrayJoined(peer, "allowed_ips");
+        reserved = getSingBoxStringArrayJoined(peer, "reserved");
+        keepalive = GetMember(peer, "persistent_keepalive_interval");
+    }
+
+    if (server.empty() || port.empty() || private_key.empty() || public_key.empty())
+        return;
+
+    if (ps.empty())
+        ps = server + ":" + port;
+
+    Proxy node;
+    string_array dns_server = {"8.8.8.8"};
+    wireguardConstruct(node, WG_DEFAULT_GROUP, ps, server, port, ip, ipv6, private_key, public_key,
+                       pre_shared_key, dns_server, mtu, keepalive, "", reserved, tribool(), underlying_proxy);
+
+    node.Id = nodes.size();
+    nodes.emplace_back(std::move(node));
 }
 
 void explodeSingbox(rapidjson::Value &outbounds, std::vector<Proxy> &nodes) {
     uint32_t index = nodes.size();
     for (rapidjson::SizeType i = 0; i < outbounds.Size(); ++i) {
-        if (outbounds[i].IsObject()) {
-            std::string proxytype, ps, server, port, cipher, group, password, ports, tempPassword; //common
-            std::string type = "none", id, aid = "0", net = "tcp", path, host, edge, tls, sni; //vmess
-            std::string fp = "chrome", pbk, sid, packet_encoding, encryption; //vless
-            std::string plugin, pluginopts, pluginopts_mode, pluginopts_host, pluginopts_mux; //ss
-            std::string protocol, protoparam, obfs, obfsparam; //ssr
-            std::string flow, mode; //trojan
-            std::string user; //socks
-            std::string ip, ipv6, private_key, public_key, mtu; //wireguard
-            std::string auth, up, down, obfsParam, insecure, alpn; //hysteria
-            std::string obfsPassword; //hysteria2
-            string_array dns_server;
-            std::string fingerprint;
-            std::string congestion_control, udp_relay_mode; //quic
-            std::string underlying_proxy;
-            tribool udp, tfo, scv, rrt, disableSni;
-            rapidjson::Value singboxNode = outbounds[i].GetObject();
-            if (singboxNode.HasMember("type") && singboxNode["type"].IsString()) {
-                Proxy node;
-                proxytype = singboxNode["type"].GetString();
-                ps = GetMember(singboxNode, "tag");
-                server = GetMember(singboxNode, "server");
-                port = GetMember(singboxNode, "server_port");
-                underlying_proxy = GetMember(singboxNode, "detour");
-                tfo = GetMember(singboxNode, "tcp_fast_open");
-                std::vector<std::string> alpnList;
-                if (singboxNode.HasMember("tls") && singboxNode["tls"].IsObject()) {
-                    rapidjson::Value tlsObj = singboxNode["tls"].GetObject();
-                    if (tlsObj.HasMember("enabled") && tlsObj["enabled"].IsBool() && tlsObj["enabled"].GetBool()) {
-                        tls = "tls";
-                    }
-                    sni = GetMember(tlsObj, "server_name");
-                    if (tlsObj.HasMember("alpn") && tlsObj["alpn"].IsArray() && !tlsObj["alpn"].Empty()) {
-                        rapidjson::Value alpns = tlsObj["alpn"].GetArray();
-                        if (alpns.Size() > 0) {
-                            alpn = alpns[0].GetString();
-                            for (auto &item: tlsObj["alpn"].GetArray()) {
-                                if (item.IsString())
-                                    alpnList.emplace_back(item.GetString());
-                            }
-                        }
-                    }
-                    if (tlsObj.HasMember("insecure") && tlsObj["insecure"].IsBool()) {
-                        scv = tlsObj["insecure"].GetBool();
-                    }
-                    if (tlsObj.HasMember("disable_sni") && tlsObj["disable_sni"].IsBool()) {
-                        disableSni = tlsObj["disable_sni"].GetBool();
-                    }
-                    if (tlsObj.HasMember("certificate") && tlsObj["certificate"].IsString()) {
-                        public_key = tlsObj["certificate"].GetString();
-                    }
-                    if (tlsObj.HasMember("certificate_public_key_sha256") &&
-                        tlsObj["certificate_public_key_sha256"].IsArray() && !tlsObj["certificate_public_key_sha256"].Empty()) {
-                        rapidjson::Value certFpArr = tlsObj["certificate_public_key_sha256"].GetArray();
-                        if (certFpArr[0].IsString()) {
-                            fingerprint = certFpArr[0].GetString();
-                        }
-                    }
-                    if (tlsObj.HasMember("reality") && tlsObj["reality"].IsObject()) {
-                        tls = "reality";
-                        rapidjson::Value reality = tlsObj["reality"].GetObject();
-                        if (reality.HasMember("server_name") && reality["server_name"].IsString()) {
-                            host = reality["server_name"].GetString();
-                        }
-                        if (reality.HasMember("public_key") && reality["public_key"].IsString()) {
-                            pbk = reality["public_key"].GetString();
-                        }
-                        if (reality.HasMember("short_id") && reality["short_id"].IsString()) {
-                            sid = reality["short_id"].GetString();
-                        }
-                    }
-                    if (tlsObj.HasMember("utls") && tlsObj["utls"].IsObject()) {
-                        if (rapidjson::Value reality = tlsObj["utls"].GetObject();
-                            reality.HasMember("fingerprint") && reality["fingerprint"].IsString()) {
-                            fingerprint = reality["fingerprint"].GetString();
-                        }
-                    }
-                } else {
-                    tls = "false";
-                }
-                switch (hash_(proxytype)) {
-                    case "vmess"_hash:
-                        group = V2RAY_DEFAULT_GROUP;
-                        id = GetMember(singboxNode, "uuid");
-                        if (id.length() < 36) {
-                            break;
-                        }
-                        aid = GetMember(singboxNode, "alter_id");
-                        cipher = GetMember(singboxNode, "security");
-                        explodeSingboxTransport(singboxNode, net, host, path, edge);
-                        vmessConstruct(node, group, ps, server, port, "", id, aid, net, cipher, path, host, edge,
-                                       tls, sni, alpnList, udp,
-                                       tfo, scv, tribool(), underlying_proxy);
-                        break;
-                    case "shadowsocks"_hash:
-                        group = SS_DEFAULT_GROUP;
-                        cipher = GetMember(singboxNode, "method");
-                        password = GetMember(singboxNode, "password");
-                        plugin = GetMember(singboxNode, "plugin");
-                        pluginopts = GetMember(singboxNode, "plugin_opts");
-                        ssConstruct(node, group, ps, server, port, password, cipher, plugin, pluginopts, udp, tfo,
-                                    scv, tribool(), underlying_proxy);
-                        break;
-                    case "trojan"_hash:
-                        group = TROJAN_DEFAULT_GROUP;
-                        password = GetMember(singboxNode, "password");
-                        explodeSingboxTransport(singboxNode, net, host, path, edge);
-                        trojanConstruct(node, group, ps, server, port, password, net, host, path, fp, sni, alpnList,
-                                        true, udp,
-                                        tfo,
-                                        scv, tribool(), underlying_proxy);
-                        break;
-                    case "vless"_hash:
-                        group = XRAY_DEFAULT_GROUP;
-                        id = GetMember(singboxNode, "uuid");
-                        flow = GetMember(singboxNode, "flow");
-                        encryption = GetMember(singboxNode, "encryption");
-                        packet_encoding = GetMember(singboxNode, "packet_encoding");
-                        if (singboxNode.HasMember("transport") && singboxNode["transport"].IsObject()) {
-                            rapidjson::Value transport = singboxNode["transport"].GetObject();
-                            net = GetMember(transport, "type");
-                            switch (hash_(net)) {
-                                case "tcp"_hash: {
-                                    break;
-                                }
-                                case "ws"_hash: {
-                                    path = GetMember(transport, "path");
-                                    if (transport.HasMember("headers") && transport["headers"].IsObject()) {
-                                        rapidjson::Value headers = transport["headers"].GetObject();
-                                        host = GetMember(headers, "Host");
-                                        edge = GetMember(headers, "Edge");
-                                    }
-                                    break;
-                                }
-                                case "http"_hash: {
-                                    host = GetMember(transport, "host");
-                                    path = GetMember(transport, "path");
-                                    edge.clear();
-                                    break;
-                                }
-                                case "httpupgrade"_hash: {
-                                    net = "h2";
-                                    host = GetMember(transport, "host");
-                                    path = GetMember(transport, "path");
-                                    edge.clear();
-                                    break;
-                                }
-                                case "grpc"_hash: {
-                                    host = server;
-                                    path = GetMember(transport, "service_name");
-                                    break;
-                                }
-                            }
-                        }
+        if (!outbounds[i].IsObject())
+            continue;
 
-                        vlessConstruct(node, group, ps, server, port, type, id, aid, net, "auto", flow, mode, path,
-                                       host, "", tls, pbk, sid, fp, sni, alpnList, packet_encoding, encryption,
-                                       udp, tribool(), tribool(), tribool(), underlying_proxy);
-                        break;
-                    case "http"_hash:
-                        password = GetMember(singboxNode, "password");
-                        user = GetMember(singboxNode, "username");
-                        httpConstruct(node, group, ps, server, port, user, password, tls == "tls", tfo, scv,
-                                      tribool(), underlying_proxy);
-                        break;
-                    case "wireguard"_hash:
-                        group = WG_DEFAULT_GROUP;
-                        ip = GetMember(singboxNode, "inet4_bind_address");
-                        ipv6 = GetMember(singboxNode, "inet6_bind_address");
-                        public_key = GetMember(singboxNode, "private_key");
-                        private_key = GetMember(singboxNode, "public_key");
-                        mtu = GetMember(singboxNode, "mtu");
-                        password = GetMember(singboxNode, "pre_shared_key");
-                        dns_server = {"8.8.8.8"};
-                        wireguardConstruct(node, group, ps, server, port, ip, ipv6, private_key, public_key,
-                                           password, dns_server, mtu, "0", "", "", udp, underlying_proxy);
-                        break;
-                    case "socks"_hash:
-                        group = SOCKS_DEFAULT_GROUP;
-                        user = GetMember(singboxNode, "username");
-                        password = GetMember(singboxNode, "password");
-                        socksConstruct(node, group, ps, server, port, user, password, tribool(), tribool(),
-                                       tribool(), underlying_proxy);
-                        break;
-                    case "hysteria"_hash:
-                        group = HYSTERIA_DEFAULT_GROUP;
-                        up = GetMember(singboxNode, "up");
-                        if (up.empty()) {
-                            up = GetMember(singboxNode, "up_mbps");
-                        }
-                        down = GetMember(singboxNode, "down");
-                        if (down.empty()) {
-                            down = GetMember(singboxNode, "down_mbps");
-                        }
-                        auth = GetMember(singboxNode, "auth_str");
-                        type = GetMember(singboxNode, "network");
-                        obfsParam = GetMember(singboxNode, "obfs");
-                        hysteriaConstruct(node, group, ps, server, port, type, auth, "", host, up, down, alpn,
-                                          obfsParam, insecure, ports, sni,
-                                          udp, tfo, scv, tribool(), underlying_proxy);
-                        break;
-                    case "anytls"_hash:
-                        group = ANYTLS_DEFAULT_GROUP;
-                        password = GetMember(singboxNode, "password");
-                        anyTlSConstruct(node, ANYTLS_DEFAULT_GROUP, ps, port, password, server, alpnList,
-                                        fingerprint, sni,
-                                        udp,
-                                        tribool(), scv, tribool(), underlying_proxy, 30, 30, 0);
-                        break;
-                    case "hysteria2"_hash:
-                        group = HYSTERIA2_DEFAULT_GROUP;
-                        password = GetMember(singboxNode, "password");
-                        up = GetMember(singboxNode, "up");
-                        down = GetMember(singboxNode, "down");
-                        if (singboxNode.HasMember("obfs") && singboxNode["obfs"].IsObject()) {
-                            rapidjson::Value obfsOpt = singboxNode["obfs"].GetObject();
-                            obfsParam = GetMember(obfsOpt, "type");
-                            obfsPassword = GetMember(obfsOpt, "password");
-                        }
-                        hysteria2Construct(node, group, ps, server, port, password, host, up, down, alpn,
-                                           obfsParam, obfsPassword, sni, public_key, fingerprint, "", udp, tfo, scv,
-                                           underlying_proxy);
-                        break;
-                    case "tuic"_hash:
-                        group = TUIC_DEFAULT_GROUP;
-                        password = GetMember(singboxNode, "password");
-                        id = GetMember(singboxNode, "uuid");
-                        congestion_control = GetMember(singboxNode, "congestion_control");
-                        if (singboxNode.HasMember("zero_rtt_handshake") && singboxNode["zero_rtt_handshake"].IsBool()) {
-                            rrt = singboxNode["zero_rtt_handshake"].GetBool();
-                        }
-                        udp_relay_mode = GetMember(singboxNode, "udp_relay_mode");
-                        tuicConstruct(node, TUIC_DEFAULT_GROUP, ps, server, port, password, congestion_control, alpn,
-                                      sni, id, udp_relay_mode, "",
-                                      tribool(),
-                                      tribool(), scv, rrt, disableSni, 15000, underlying_proxy);
-                        break;
-                    default:
-                        continue;
+        std::string proxytype = GetMember(outbounds[i], "type");
+        if (!isSingBoxNodeType(proxytype))
+            continue;
+
+        std::string ps = GetMember(outbounds[i], "tag");
+        std::string server = GetMember(outbounds[i], "server");
+        std::string port = GetMember(outbounds[i], "server_port");
+        std::string ports = getSingBoxStringArrayJoined(outbounds[i], "server_ports");
+        if (!ports.empty()) {
+            ports = replaceAllDistinct(ports, ":", "-");
+            const std::string first_port = split(ports, ",").front();
+            const std::string::size_type dash = first_port.find('-');
+            port = dash == std::string::npos ? first_port : first_port.substr(0, dash);
+        }
+        if (server.empty() || port.empty())
+            continue;
+
+        std::string type = "none";
+        std::string id;
+        std::string aid = "0";
+        std::string net = "tcp";
+        std::string path;
+        std::string host;
+        std::string edge;
+        std::string tls;
+        std::string sni;
+        std::string fp = "chrome";
+        std::string pbk;
+        std::string sid;
+        std::string packet_encoding;
+        std::string encryption;
+        std::string plugin;
+        std::string pluginopts;
+        std::string flow;
+        std::string mode;
+        std::string user;
+        std::string ip;
+        std::string ipv6;
+        std::string private_key;
+        std::string public_key;
+        std::string mtu;
+        std::string auth;
+        std::string up;
+        std::string down;
+        std::string obfs_param;
+        std::string obfs_password;
+        std::string insecure;
+        std::string alpn;
+        std::string congestion_control;
+        std::string udp_relay_mode;
+        std::string underlying_proxy = GetMember(outbounds[i], "detour");
+        string_array dns_server;
+        std::vector<std::string> alpn_list;
+        tribool udp, tfo, scv, rrt, disable_sni;
+        bool http_upgrade = false;
+
+        tfo = GetMember(outbounds[i], "tcp_fast_open");
+
+        if (outbounds[i].HasMember("tls") && outbounds[i]["tls"].IsObject()) {
+            rapidjson::Value &tls_object = outbounds[i]["tls"];
+            if (!tls_object.HasMember("enabled") ||
+                (tls_object["enabled"].IsBool() && tls_object["enabled"].GetBool()))
+                tls = "tls";
+
+            sni = GetMember(tls_object, "server_name");
+            if (tls_object.HasMember("alpn") && tls_object["alpn"].IsArray()) {
+                for (rapidjson::SizeType j = 0; j < tls_object["alpn"].Size(); ++j) {
+                    if (tls_object["alpn"][j].IsString()) {
+                        const std::string value = tls_object["alpn"][j].GetString();
+                        if (alpn.empty())
+                            alpn = value;
+                        alpn_list.emplace_back(value);
+                    }
                 }
+            }
+            if (tls_object.HasMember("insecure") && tls_object["insecure"].IsBool())
+                scv = tls_object["insecure"].GetBool();
+            if (tls_object.HasMember("disable_sni") && tls_object["disable_sni"].IsBool())
+                disable_sni = tls_object["disable_sni"].GetBool();
+            if (tls_object.HasMember("certificate") && tls_object["certificate"].IsString())
+                public_key = tls_object["certificate"].GetString();
+            if (tls_object.HasMember("utls") && tls_object["utls"].IsObject()) {
+                rapidjson::Value &utls = tls_object["utls"];
+                if (utls.HasMember("fingerprint") && utls["fingerprint"].IsString())
+                    fp = utls["fingerprint"].GetString();
+            }
+            if (tls_object.HasMember("reality") && tls_object["reality"].IsObject()) {
+                tls = "reality";
+                rapidjson::Value &reality = tls_object["reality"];
+                if (reality.HasMember("public_key") && reality["public_key"].IsString())
+                    pbk = reality["public_key"].GetString();
+                if (reality.HasMember("short_id") && reality["short_id"].IsString())
+                    sid = reality["short_id"].GetString();
+            }
+        } else {
+            tls = "false";
+        }
+
+        switch (hash_(proxytype)) {
+            case "vmess"_hash: {
+                id = GetMember(outbounds[i], "uuid");
+                if (id.length() < 36)
+                    continue;
+                aid = GetMember(outbounds[i], "alter_id");
+                std::string cipher = GetMember(outbounds[i], "security");
+                explodeSingboxTransport(outbounds[i], net, host, path, edge, http_upgrade);
+                if (net == "http" && tls == "tls")
+                    net = "h2";
+                Proxy node;
+                vmessConstruct(node, V2RAY_DEFAULT_GROUP, ps, server, port, type, id, aid, net, cipher,
+                               path, host, edge, tls, sni, alpn_list, udp, tfo, scv, tribool(),
+                               underlying_proxy);
+                if (http_upgrade)
+                    node.V2rayHttpUpgrade = true;
                 node.Id = index;
                 nodes.emplace_back(std::move(node));
                 index++;
+                break;
             }
+            case "shadowsocks"_hash: {
+                std::string cipher = GetMember(outbounds[i], "method");
+                std::string password = GetMember(outbounds[i], "password");
+                plugin = GetMember(outbounds[i], "plugin");
+                pluginopts = GetMember(outbounds[i], "plugin_opts");
+                Proxy node;
+                ssConstruct(node, SS_DEFAULT_GROUP, ps, server, port, password, cipher, plugin, pluginopts,
+                            udp, tfo, scv, tribool(), underlying_proxy);
+                node.Id = index;
+                nodes.emplace_back(std::move(node));
+                index++;
+                break;
+            }
+            case "trojan"_hash: {
+                std::string password = GetMember(outbounds[i], "password");
+                explodeSingboxTransport(outbounds[i], net, host, path, edge, http_upgrade);
+                Proxy node;
+                trojanConstruct(node, TROJAN_DEFAULT_GROUP, ps, server, port, password, net, host, path,
+                                fp, sni, alpn_list, true, udp, tfo, scv, tribool(), underlying_proxy);
+                if (http_upgrade)
+                    node.V2rayHttpUpgrade = true;
+                node.Id = index;
+                nodes.emplace_back(std::move(node));
+                index++;
+                break;
+            }
+            case "vless"_hash: {
+                id = GetMember(outbounds[i], "uuid");
+                flow = GetMember(outbounds[i], "flow");
+                encryption = GetMember(outbounds[i], "encryption");
+                packet_encoding = GetMember(outbounds[i], "packet_encoding");
+                explodeSingboxTransport(outbounds[i], net, host, path, edge, http_upgrade);
+                if (net == "grpc" && host.empty())
+                    host = server;
+                if (net == "http" && tls == "tls")
+                    net = "h2";
+
+                Proxy node;
+                vlessConstruct(node, XRAY_DEFAULT_GROUP, ps, server, port, type, id, aid, net, "auto", flow,
+                               mode, path, host, edge, tls, pbk, sid, fp, sni, alpn_list, packet_encoding,
+                               encryption, udp, tribool(), tribool(), tribool(), underlying_proxy,
+                               http_upgrade ? tribool(true) : tribool());
+                node.Id = index;
+                nodes.emplace_back(std::move(node));
+                index++;
+                break;
+            }
+            case "http"_hash: {
+                std::string password = GetMember(outbounds[i], "password");
+                user = GetMember(outbounds[i], "username");
+                Proxy node;
+                httpConstruct(node, HTTP_DEFAULT_GROUP, ps, server, port, user, password, tls == "tls",
+                              tfo, scv, tribool(), underlying_proxy);
+                node.Id = index;
+                nodes.emplace_back(std::move(node));
+                index++;
+                break;
+            }
+            case "wireguard"_hash: {
+                private_key = GetMember(outbounds[i], "private_key");
+                public_key = GetMember(outbounds[i], "public_key");
+                ip = GetMember(outbounds[i], "inet4_bind_address");
+                ipv6 = GetMember(outbounds[i], "inet6_bind_address");
+                if (ip.empty() && outbounds[i].HasMember("local_address")) {
+                    auto add_local = [&](std::string address) {
+                        const std::string::size_type slash = address.find('/');
+                        if (slash != std::string::npos)
+                            address.erase(slash);
+                        if (address.find(':') != std::string::npos) {
+                            if (ipv6.empty())
+                                ipv6 = address;
+                        } else if (ip.empty()) {
+                            ip = address;
+                        }
+                    };
+
+                    const rapidjson::Value &local = outbounds[i]["local_address"];
+                    if (local.IsString()) {
+                        add_local(local.GetString());
+                    } else if (local.IsArray()) {
+                        for (rapidjson::SizeType j = 0; j < local.Size(); ++j) {
+                            if (local[j].IsString())
+                                add_local(local[j].GetString());
+                        }
+                    }
+                }
+                mtu = GetMember(outbounds[i], "mtu");
+                std::string pre_shared_key = GetMember(outbounds[i], "pre_shared_key");
+                dns_server = {"8.8.8.8"};
+                Proxy node;
+                wireguardConstruct(node, WG_DEFAULT_GROUP, ps, server, port, ip, ipv6, private_key, public_key,
+                                   pre_shared_key, dns_server, mtu, "0", "", "", udp, underlying_proxy);
+                node.Id = index;
+                nodes.emplace_back(std::move(node));
+                index++;
+                break;
+            }
+            case "socks"_hash: {
+                user = GetMember(outbounds[i], "username");
+                std::string password = GetMember(outbounds[i], "password");
+                Proxy node;
+                socksConstruct(node, SOCKS_DEFAULT_GROUP, ps, server, port, user, password, tribool(), tribool(),
+                               tribool(), underlying_proxy);
+                node.Id = index;
+                nodes.emplace_back(std::move(node));
+                index++;
+                break;
+            }
+            case "hysteria"_hash: {
+                up = GetMember(outbounds[i], "up");
+                if (up.empty()) {
+                    up = GetMember(outbounds[i], "up_mbps");
+                    if (!up.empty())
+                        up += " Mbps";
+                }
+                down = GetMember(outbounds[i], "down");
+                if (down.empty()) {
+                    down = GetMember(outbounds[i], "down_mbps");
+                    if (!down.empty())
+                        down += " Mbps";
+                }
+                auth = GetMember(outbounds[i], "auth_str");
+                type = GetMember(outbounds[i], "network");
+                obfs_param = GetMember(outbounds[i], "obfs");
+                Proxy node;
+                hysteriaConstruct(node, HYSTERIA_DEFAULT_GROUP, ps, server, port, type, auth, "", host, up,
+                                  down, alpn, obfs_param, insecure, ports, sni, udp, tfo, scv, tribool(),
+                                  underlying_proxy);
+                node.Id = index;
+                nodes.emplace_back(std::move(node));
+                index++;
+                break;
+            }
+            case "anytls"_hash: {
+                std::string password = GetMember(outbounds[i], "password");
+                Proxy node;
+                anyTlSConstruct(node, ANYTLS_DEFAULT_GROUP, ps, port, password, server, alpn_list, fp, sni,
+                                udp, tribool(), scv, tribool(), underlying_proxy, 30, 30, 0);
+                node.Id = index;
+                nodes.emplace_back(std::move(node));
+                index++;
+                break;
+            }
+            case "hysteria2"_hash: {
+                std::string password = GetMember(outbounds[i], "password");
+                up = GetMember(outbounds[i], "up");
+                if (up.empty()) {
+                    up = GetMember(outbounds[i], "up_mbps");
+                    if (!up.empty())
+                        up += " Mbps";
+                }
+                down = GetMember(outbounds[i], "down");
+                if (down.empty()) {
+                    down = GetMember(outbounds[i], "down_mbps");
+                    if (!down.empty())
+                        down += " Mbps";
+                }
+                if (outbounds[i].HasMember("obfs") && outbounds[i]["obfs"].IsObject()) {
+                    rapidjson::Value &obfs = outbounds[i]["obfs"];
+                    obfs_param = GetMember(obfs, "type");
+                    obfs_password = GetMember(obfs, "password");
+                }
+                Proxy node;
+                hysteria2Construct(node, HYSTERIA2_DEFAULT_GROUP, ps, server, port, password, host, up, down,
+                                   alpn, obfs_param, obfs_password, sni, public_key, "", ports, udp, tfo, scv,
+                                   underlying_proxy);
+                node.Id = index;
+                nodes.emplace_back(std::move(node));
+                index++;
+                break;
+            }
+            case "tuic"_hash: {
+                std::string password = GetMember(outbounds[i], "password");
+                id = GetMember(outbounds[i], "uuid");
+                congestion_control = GetMember(outbounds[i], "congestion_control");
+                if (outbounds[i].HasMember("zero_rtt_handshake") &&
+                    outbounds[i]["zero_rtt_handshake"].IsBool())
+                    rrt = outbounds[i]["zero_rtt_handshake"].GetBool();
+                udp_relay_mode = GetMember(outbounds[i], "udp_relay_mode");
+                Proxy node;
+                tuicConstruct(node, TUIC_DEFAULT_GROUP, ps, server, port, password, congestion_control, alpn,
+                              sni, id, udp_relay_mode, "", tribool(), tribool(), scv, rrt, disable_sni,
+                              15000, underlying_proxy);
+                node.Id = index;
+                nodes.emplace_back(std::move(node));
+                index++;
+                break;
+            }
+            default:
+                continue;
         }
     }
+}
+
+static bool hasSingBoxNodes(rapidjson::Document &document) {
+    if (document.HasMember("outbounds") && document["outbounds"].IsArray()) {
+        const rapidjson::Value &outbounds = document["outbounds"];
+        for (rapidjson::SizeType i = 0; i < outbounds.Size(); ++i) {
+            if (outbounds[i].IsObject() && isSingBoxNodeType(GetMember(outbounds[i], "type")))
+                return true;
+        }
+    }
+    if (document.HasMember("endpoints") && document["endpoints"].IsArray()) {
+        const rapidjson::Value &endpoints = document["endpoints"];
+        for (rapidjson::SizeType i = 0; i < endpoints.Size(); ++i) {
+            if (endpoints[i].IsObject() && GetMember(endpoints[i], "type") == "wireguard")
+                return true;
+        }
+    }
+    return false;
 }
 
 void explodeTuic(const std::string &tuic, Proxy &node) {
@@ -3469,23 +3725,18 @@ void explodeSub(std::string sub, std::vector<Proxy> &nodes) {
         throw;
     }
     try {
-        std::string pattern = "\"?(inbounds)\"?:";
-        if (!processed &&
-            regFind(sub, pattern)) {
-            pattern = "\"?(outbounds)\"?:";
-            if (regFind(sub, pattern)) {
-                pattern = "\"?(route)\"?:";
-                if (regFind(sub, pattern)) {
-                    rapidjson::Document document;
-                    document.Parse(sub.c_str());
-                    if (!document.HasParseError() || document.IsObject()) {
-                        rapidjson::Value &value = document["outbounds"];
-                        if (value.IsArray() && !value.Empty()) {
-                            explodeSingbox(value, nodes);
-                            processed = true;
-                        }
-                    }
+        if (!processed && regFind(sub, "\"?(outbounds|endpoints)\"?:")) {
+            rapidjson::Document document;
+            document.Parse(sub.c_str());
+            if (!document.HasParseError() && document.IsObject() && hasSingBoxNodes(document)) {
+                const std::size_t before = nodes.size();
+                if (document.HasMember("outbounds") && document["outbounds"].IsArray())
+                    explodeSingbox(document["outbounds"], nodes);
+                if (document.HasMember("endpoints") && document["endpoints"].IsArray()) {
+                    for (rapidjson::SizeType i = 0; i < document["endpoints"].Size(); ++i)
+                        explodeSingboxEndpoint(document["endpoints"][i], nodes);
                 }
+                processed = nodes.size() > before;
             }
         }
     } catch (std::exception &e) {
