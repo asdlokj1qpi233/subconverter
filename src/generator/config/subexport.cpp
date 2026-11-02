@@ -1156,7 +1156,8 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
                 if (!x.ServerName.empty())
                     proxy += ",sni=" + x.ServerName;
                 if (!x.Ports.empty())
-                    proxy += ",port-hopping=" + x.Ports;
+                    proxy += ",port-hopping=\"" +
+                             replaceAllDistinct(replaceAllDistinct(x.Ports, "/", ";"), ",", ";") + "\"";
                 break;
             case ProxyType::AnyTLS:
                 if (surge_ver < 4)
@@ -1349,13 +1350,14 @@ std::string proxyToSingle(std::vector<Proxy> &nodes, int types, extra_settings &
             case ProxyType::Hysteria2:
                 if (!hysteria2)
                     continue;
-                proxyStr = "hysteria2://" + password + "@" + hostname + ":" + port + (ports.empty() ? "" : "," + ports)
+                proxyStr = "hysteria2://" + password + "@" + hostname + ":" + port +
+                           (ports.empty() ? "" : "," + replaceAllDistinct(ports, "/", ","))
                            + "?insecure=" +
                            (x.AllowInsecure.get() ? "1" : "0");
                 if (!obfsparam.empty()) {
                     proxyStr += "&obfs=" + obfsparam;
                     if (!obfsPassword.empty()) {
-                        proxyStr += "&obfs-password=" + obfsparam;
+                        proxyStr += "&obfs-password=" + obfsPassword;
                     }
                 }
                 if (!sni.empty()) {
@@ -2916,6 +2918,18 @@ proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json,
             case ProxyType::Hysteria2: {
                 addSingBoxCommonMembers(proxy, x, "hysteria2", allocator);
                 proxy.AddMember("password", rapidjson::StringRef(x.Password.c_str()), allocator);
+                if (!x.Ports.empty()) {
+                    rapidjson::Value serverPorts(rapidjson::kArrayType);
+                    for (auto &range: split(replaceAllDistinct(x.Ports, "/", ","), ",")) {
+                        range = trim(range);
+                        if (range.empty())
+                            continue;
+                        range = strFind(range, "-") ? replaceAllDistinct(range, "-", ":") : range + ":" + range;
+                        serverPorts.PushBack(rapidjson::Value(range.c_str(), allocator), allocator);
+                    }
+                    if (!serverPorts.Empty())
+                        proxy.AddMember("server_ports", serverPorts, allocator);
+                }
                 if (!x.TLSSecure) {
                     rapidjson::Value tls(rapidjson::kObjectType);
                     tls.AddMember("enabled", true, allocator);
