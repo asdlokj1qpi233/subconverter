@@ -166,6 +166,19 @@ std::string getUrlAlpn(const std::string &addition) {
     return join(getUrlAlpnList(addition), ",");
 }
 
+// split a hysteria multi-port spec like "443,20000-20999" into the main port and the hopping ports
+void splitHysteriaPorts(const std::string &spec, std::string &port, std::string &ports) {
+    std::string first = spec.substr(0, spec.find_first_of(",/"));
+    string_size dash = first.find('-');
+    if (dash == std::string::npos) {
+        port = first;
+        ports = first.size() < spec.size() ? spec.substr(first.size() + 1) : "";
+    } else {
+        port = first.substr(0, dash);
+        ports = spec;
+    }
+}
+
 void commonConstruct(Proxy &node, ProxyType type, const std::string &group, const std::string &remarks,
                      const std::string &server, const std::string &port, const tribool &udp, const tribool &tfo,
                      const tribool &scv, const tribool &tls13, const std::string &underlying_proxy) {
@@ -1325,7 +1338,7 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes) {
         singleproxy["port-range"] >>= ports;
 
         if (port.empty() || port == "0")
-            if (ports.empty())
+            if (ports.empty() && safe_as<std::string>(singleproxy["ports"]).empty())
                 continue;
         udp = safe_as<std::string>(singleproxy["udp"]);
         scv = safe_as<std::string>(singleproxy["skip-cert-verify"]);
@@ -1638,6 +1651,10 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes) {
                 singleproxy["alpn"] >> alpnList;
                 singleproxy["protocol"] >> insecure;
                 singleproxy["ports"] >> ports;
+                if ((port.empty() || port == "0") && !ports.empty()) {
+                    std::string rest;
+                    splitHysteriaPorts(ports, port, rest);
+                }
                 sni = host;
                 hysteriaConstruct(node, group, ps, server, port, type, auth, "", host, up, down, alpn, obfsParam,
                                   insecure, ports, sni,
@@ -1671,6 +1688,10 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes) {
                 singleproxy["sni"] >>= host;
                 singleproxy["alpn"][0] >>= alpn;
                 singleproxy["ports"] >> ports;
+                if ((port.empty() || port == "0") && !ports.empty()) {
+                    std::string rest;
+                    splitHysteriaPorts(ports, port, rest);
+                }
                 singleproxy["fingerprint"] >>= fingerprint;
                 sni = host;
                 hysteria2Construct(node, group, ps, server, port, password, host, up, down, alpn, obfsParam,
@@ -1782,7 +1803,7 @@ void explodeStdVMess(std::string vmess, Proxy &node) {
 
 
 void explodeStdHysteria(std::string hysteria, Proxy &node) {
-    std::string add, port, type, auth, host, insecure, up, down, alpn, obfsParam, remarks, auth_str, sni;
+    std::string add, port, type, auth, host, insecure, up, down, alpn, obfsParam, remarks, auth_str, sni, ports;
     std::string addition;
     hysteria = hysteria.substr(11);
     string_size pos;
@@ -1801,12 +1822,13 @@ void explodeStdHysteria(std::string hysteria, Proxy &node) {
     alpn = getUrlAlpn(addition);
     obfsParam = getUrlArg(addition, "obfsParam");
     sni = getUrlArg(addition, "peer");
+    ports = getUrlArg(addition, "mport");
 
     if (remarks.empty())
         remarks = add + ":" + port;
     hysteriaConstruct(node, HYSTERIA_DEFAULT_GROUP, remarks, add, port, type, auth, auth_str, host, up, down, alpn,
                       obfsParam,
-                      insecure, "", sni);
+                      insecure, ports, sni);
     return;
 }
 
@@ -1854,7 +1876,7 @@ void explodeStdMieru(std::string mieru, Proxy &node) {
 void explodeStdHysteria2(std::string hysteria2, Proxy &node) {
     std::string add, port, password, host, insecure, up, down, alpn, obfsParam, obfsPassword, remarks, sni, ports;
     std::string fingerprint;
-    std::string addition;
+    std::string addition, portSpec;
     tribool scv;
     hysteria2 = hysteria2.substr(12);
     string_size pos;
@@ -1867,8 +1889,10 @@ void explodeStdHysteria2(std::string hysteria2, Proxy &node) {
         hysteria2.erase(pos);
     }
 
+    // the port part may carry port hopping ranges, e.g. host:443,20000-20999 or host:20000-20999
     if (strFind(hysteria2, "@")) {
-        if (regGetMatch(hysteria2, R"(^(.*?)@(.*)[:](\d+)$)", 4, 0, &password, &add, &port))
+        if (regGetMatch(hysteria2, R"(^(.*?)@(.*)[:](\d+(?:-\d+)?(?:[,/]\d+(?:-\d+)?)*)$)", 4, 0, &password, &add,
+                        &portSpec))
             return;
     } else {
         password = getUrlArg(addition, "password");
@@ -1878,9 +1902,10 @@ void explodeStdHysteria2(std::string hysteria2, Proxy &node) {
         if (!strFind(hysteria2, ":"))
             return;
 
-        if (regGetMatch(hysteria2, R"(^(.*)[:](\d+)$)", 3, 0, &add, &port))
+        if (regGetMatch(hysteria2, R"(^(.*)[:](\d+(?:-\d+)?(?:[,/]\d+(?:-\d+)?)*)$)", 3, 0, &add, &portSpec))
             return;
     }
+    splitHysteriaPorts(portSpec, port, ports);
 
     scv = getUrlArg(addition, "insecure");
     up = getUrlArg(addition, "up");
@@ -1890,7 +1915,10 @@ void explodeStdHysteria2(std::string hysteria2, Proxy &node) {
     obfsPassword = getUrlArg(addition, "obfs-password");
     host = getUrlArg(addition, "sni");
     sni = getUrlArg(addition, "sni");
-    ports = getUrlArg(addition, "ports");
+    if (ports.empty())
+        ports = getUrlArg(addition, "ports");
+    if (ports.empty())
+        ports = getUrlArg(addition, "mport");
     fingerprint = getUrlArg(addition, "pinSHA256");
     if (remarks.empty())
         remarks = add + ":" + port;
@@ -3272,9 +3300,21 @@ void explodeSingbox(rapidjson::Value &outbounds, std::vector<Proxy> &nodes) {
                             obfsParam = GetMember(obfsOpt, "type");
                             obfsPassword = GetMember(obfsOpt, "password");
                         }
+                        if (singboxNode.HasMember("server_ports") && singboxNode["server_ports"].IsArray()) {
+                            string_array portRanges;
+                            for (auto &item: singboxNode["server_ports"].GetArray()) {
+                                if (item.IsString())
+                                    portRanges.emplace_back(replaceAllDistinct(item.GetString(), ":", "-"));
+                            }
+                            ports = join(portRanges, ",");
+                            if ((port.empty() || port == "0") && !ports.empty()) {
+                                std::string rest;
+                                splitHysteriaPorts(ports, port, rest);
+                            }
+                        }
                         hysteria2Construct(node, group, ps, server, port, password, host, up, down, alpn,
-                                           obfsParam, obfsPassword, sni, public_key, fingerprint, "", udp, tfo, scv,
-                                           underlying_proxy);
+                                           obfsParam, obfsPassword, sni, public_key, fingerprint, ports, udp, tfo,
+                                           scv, underlying_proxy);
                         break;
                     case "tuic"_hash:
                         group = TUIC_DEFAULT_GROUP;
