@@ -507,7 +507,7 @@ proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGroupCo
                 if (!x.SelfIPv6.empty())
                     singleproxy["ipv6"] = x.SelfIPv6;
                 if (!x.PreSharedKey.empty())
-                    singleproxy["preshared-key"] = x.PreSharedKey;
+                    singleproxy["pre-shared-key"] = x.PreSharedKey;
                 if (!x.DnsServers.empty())
                     singleproxy["dns"] = x.DnsServers;
                 if (x.Mtu > 0)
