@@ -249,6 +249,22 @@ groupGenerate(const std::string &rule, std::vector<Proxy> &nodelist, string_arra
     }
 }
 
+// SIP003 plugin options are "key[=value]" pairs separated by ';'. Match whole keys,
+// so "mux=0" is not read as on and "tls" is not found inside "host=tls.example.com".
+static bool getPluginOption(const std::string &opts, const std::string &key, std::string *value = nullptr) {
+    if (value)
+        value->clear();
+    for (const std::string &item: split(opts, ";")) {
+        std::string::size_type pos = item.find('=');
+        if (item.substr(0, pos) != key)
+            continue;
+        if (value)
+            *value = pos == std::string::npos ? "" : item.substr(pos + 1);
+        return true;
+    }
+    return false;
+}
+
 void
 proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGroupConfigs &extra_proxy_group, bool clashR,
              extra_settings &ext) {
@@ -320,16 +336,24 @@ proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGroupCo
                         singleproxy["plugin-opts"]["mode"] = urlDecode(getUrlArg(pluginopts, "obfs"));
                         singleproxy["plugin-opts"]["host"] = urlDecode(getUrlArg(pluginopts, "obfs-host"));
                         break;
-                    case "v2ray-plugin"_hash:
+                    case "v2ray-plugin"_hash: {
+                        std::string mode, host, path, mux;
+                        getPluginOption(x.PluginOption, "mode", &mode);
+                        getPluginOption(x.PluginOption, "host", &host);
+                        getPluginOption(x.PluginOption, "path", &path);
                         singleproxy["plugin"] = "v2ray-plugin";
-                        singleproxy["plugin-opts"]["mode"] = getUrlArg(pluginopts, "mode");
-                        singleproxy["plugin-opts"]["host"] = getUrlArg(pluginopts, "host");
-                        singleproxy["plugin-opts"]["path"] = getUrlArg(pluginopts, "path");
-                        singleproxy["plugin-opts"]["tls"] = pluginopts.find("tls") != std::string::npos;
-                        singleproxy["plugin-opts"]["mux"] = pluginopts.find("mux") != std::string::npos;
+                        // v2ray-plugin defaults to websocket when mode is not given
+                        singleproxy["plugin-opts"]["mode"] = mode.empty() ? "websocket" : mode;
+                        singleproxy["plugin-opts"]["host"] = host;
+                        singleproxy["plugin-opts"]["path"] = path;
+                        singleproxy["plugin-opts"]["tls"] = getPluginOption(x.PluginOption, "tls");
+                        // mux is a connection count in v2ray-plugin: on by default, 0 turns it off
+                        singleproxy["plugin-opts"]["mux"] =
+                                !getPluginOption(x.PluginOption, "mux", &mux) || to_int(mux, 1) != 0;
                         if (!scv.is_undef())
                             singleproxy["plugin-opts"]["skip-cert-verify"] = scv.get();
                         break;
+                    }
                 }
                 break;
             case ProxyType::VMess:
@@ -1888,12 +1912,13 @@ void proxyToQuanX(std::vector<Proxy> &nodes, INIReader &ini, std::vector<Ruleset
                             if (!pluginopts.empty())
                                 proxyStr += ", " + replaceAllDistinct(pluginopts, ";", ", ");
                             break;
-                        case "v2ray-plugin"_hash:
-                            pluginopts = replaceAllDistinct(pluginopts, ";", "&");
-                            plugin = getUrlArg(pluginopts, "mode") == "websocket" ? "ws" : "";
-                            host = getUrlArg(pluginopts, "host");
-                            path = getUrlArg(pluginopts, "path");
-                            tlssecure = pluginopts.find("tls") != std::string::npos;
+                        case "v2ray-plugin"_hash: {
+                            std::string mode;
+                            getPluginOption(pluginopts, "mode", &mode);
+                            plugin = mode.empty() || mode == "websocket" ? "ws" : "";
+                            getPluginOption(pluginopts, "host", &host);
+                            getPluginOption(pluginopts, "path", &path);
+                            tlssecure = getPluginOption(pluginopts, "tls");
                             if (tlssecure && plugin == "ws") {
                                 plugin += 's';
                                 if (!tls13.is_undef())
@@ -1905,6 +1930,7 @@ void proxyToQuanX(std::vector<Proxy> &nodes, INIReader &ini, std::vector<Ruleset
                             if (!path.empty())
                                 proxyStr += ", obfs-uri=" + path;
                             break;
+                        }
                         default:
                             continue;
                     }
