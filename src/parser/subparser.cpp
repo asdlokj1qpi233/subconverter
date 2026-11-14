@@ -1404,7 +1404,9 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes) {
                                 singleproxy["plugin-opts"]["host"] >>= pluginopts_host;
                                 tls = safe_as<bool>(singleproxy["plugin-opts"]["tls"]) ? "tls;" : "";
                                 singleproxy["plugin-opts"]["path"] >>= path;
-                                pluginopts_mux = safe_as<bool>(singleproxy["plugin-opts"]["mux"]) ? "4" : "";
+                                // mux defaults to on, so keep an explicit false as mux=0
+                                if (singleproxy["plugin-opts"]["mux"].IsDefined())
+                                    pluginopts_mux = safe_as<bool>(singleproxy["plugin-opts"]["mux"]) ? "4" : "0";
                             }
                             break;
                         default:
