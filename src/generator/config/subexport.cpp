@@ -265,6 +265,32 @@ static bool getPluginOption(const std::string &opts, const std::string &key, std
     return false;
 }
 
+// Plugin option booleans as users write them: 1 for 1/true/yes/on, 0 for 0/false/no/off,
+// -1 for anything else (an empty value or a number such as a mux count).
+static int pluginBool(const std::string &value) {
+    std::string v = toLower(trim(value));
+    if (v == "1" || v == "true" || v == "yes" || v == "on")
+        return 1;
+    if (v == "0" || v == "false" || v == "no" || v == "off")
+        return 0;
+    return -1;
+}
+
+// tls is on when the key is present, unless its value is a false word ("tls", "tls=1" and "tls=on" are on).
+static bool pluginTls(const std::string &opts) {
+    std::string value;
+    return getPluginOption(opts, "tls", &value) && pluginBool(value) != 0;
+}
+
+// mux is on by default; a false word or a count of 0 turns it off, as in v2ray-plugin.
+static bool pluginMux(const std::string &opts) {
+    std::string value;
+    if (!getPluginOption(opts, "mux", &value))
+        return true;
+    int b = pluginBool(value);
+    return b == -1 ? to_int(value, 1) != 0 : b == 1;
+}
+
 void
 proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGroupConfigs &extra_proxy_group, bool clashR,
              extra_settings &ext) {
@@ -337,7 +363,7 @@ proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGroupCo
                         singleproxy["plugin-opts"]["host"] = urlDecode(getUrlArg(pluginopts, "obfs-host"));
                         break;
                     case "v2ray-plugin"_hash: {
-                        std::string mode, host, path, mux;
+                        std::string mode, host, path;
                         getPluginOption(x.PluginOption, "mode", &mode);
                         getPluginOption(x.PluginOption, "host", &host);
                         getPluginOption(x.PluginOption, "path", &path);
@@ -346,10 +372,8 @@ proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGroupCo
                         singleproxy["plugin-opts"]["mode"] = mode.empty() ? "websocket" : mode;
                         singleproxy["plugin-opts"]["host"] = host;
                         singleproxy["plugin-opts"]["path"] = path;
-                        singleproxy["plugin-opts"]["tls"] = getPluginOption(x.PluginOption, "tls");
-                        // mux is a connection count in v2ray-plugin: on by default, 0 turns it off
-                        singleproxy["plugin-opts"]["mux"] =
-                                !getPluginOption(x.PluginOption, "mux", &mux) || to_int(mux, 1) != 0;
+                        singleproxy["plugin-opts"]["tls"] = pluginTls(x.PluginOption);
+                        singleproxy["plugin-opts"]["mux"] = pluginMux(x.PluginOption);
                         if (!scv.is_undef())
                             singleproxy["plugin-opts"]["skip-cert-verify"] = scv.get();
                         break;
@@ -1918,7 +1942,7 @@ void proxyToQuanX(std::vector<Proxy> &nodes, INIReader &ini, std::vector<Ruleset
                             plugin = mode.empty() || mode == "websocket" ? "ws" : "";
                             getPluginOption(pluginopts, "host", &host);
                             getPluginOption(pluginopts, "path", &path);
-                            tlssecure = getPluginOption(pluginopts, "tls");
+                            tlssecure = pluginTls(pluginopts);
                             if (tlssecure && plugin == "ws") {
                                 plugin += 's';
                                 if (!tls13.is_undef())
