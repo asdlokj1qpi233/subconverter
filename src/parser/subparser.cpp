@@ -1950,6 +1950,14 @@ void explodeStdHysteria2(std::string hysteria2, Proxy &node) {
 
     hysteria2Construct(node, HYSTERIA2_DEFAULT_GROUP, remarks, add, port, password, host, up, down, alpn, obfsParam,
                        obfsPassword, host, "", fingerprint, ports, tribool(), tribool(), scv);
+    // no standard key in the hy2 URI scheme; accept the names used by common clients
+    for (const char *key: {"hop-interval", "hop_interval", "hopInterval", "mportHopInt"}) {
+        std::string hopInterval = getUrlArg(addition, key);
+        if (!hopInterval.empty()) {
+            node.HopInterval = normalizeHopInterval(hopInterval);
+            break;
+        }
+    }
     return;
 }
 

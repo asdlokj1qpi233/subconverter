@@ -1380,6 +1380,8 @@ std::string proxyToSingle(std::vector<Proxy> &nodes, int types, extra_settings &
                 if (!x.Fingerprint.empty()) {
                     proxyStr += "&pinSHA256=" + x.Fingerprint;
                 }
+                if (!ports.empty() && !x.HopInterval.empty())
+                    proxyStr += "&hop-interval=" + urlEncode(x.HopInterval);
                 proxyStr += "#" + urlEncode(remark);
                 break;
             case ProxyType::VLESS:
