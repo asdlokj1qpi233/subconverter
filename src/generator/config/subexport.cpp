@@ -522,6 +522,12 @@ proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGroupCo
                 if (!x.Ports.empty()) {
                     singleproxy["ports"] = x.Ports;
                 }
+                if (!x.HopInterval.empty()) {
+                    if (isNumeric(x.HopInterval) && x.HopInterval.size() <= 9)
+                        singleproxy["hop-interval"] = std::stoi(x.HopInterval);
+                    else
+                        singleproxy["hop-interval"] = x.HopInterval;
+                }
                 if (!tfo.is_undef()) {
                     singleproxy["fast-open"] = tfo.get();
                 }
@@ -565,6 +571,12 @@ proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGroupCo
                     singleproxy["obfs-password"] = x.OBFSPassword;
                 if (!x.Ports.empty())
                     singleproxy["ports"] = x.Ports;
+                if (!x.HopInterval.empty()) {
+                    if (isNumeric(x.HopInterval) && x.HopInterval.size() <= 9)
+                        singleproxy["hop-interval"] = std::stoi(x.HopInterval);
+                    else
+                        singleproxy["hop-interval"] = x.HopInterval;
+                }
                 break;
             case ProxyType::TUIC:
                 singleproxy["type"] = "tuic";
@@ -1156,7 +1168,10 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
                 if (!x.ServerName.empty())
                     proxy += ",sni=" + x.ServerName;
                 if (!x.Ports.empty())
-                    proxy += ",port-hopping=" + x.Ports;
+                    proxy += ",port-hopping=\"" +
+                             replaceAllDistinct(replaceAllDistinct(x.Ports, "/", ";"), ",", ";") + "\"";
+                if (!x.Ports.empty() && !x.HopInterval.empty() && isNumeric(x.HopInterval))
+                    proxy += ",port-hopping-interval=" + x.HopInterval;
                 break;
             case ProxyType::AnyTLS:
                 if (surge_ver < 4)
@@ -1349,13 +1364,14 @@ std::string proxyToSingle(std::vector<Proxy> &nodes, int types, extra_settings &
             case ProxyType::Hysteria2:
                 if (!hysteria2)
                     continue;
-                proxyStr = "hysteria2://" + password + "@" + hostname + ":" + port + (ports.empty() ? "" : "," + ports)
+                proxyStr = "hysteria2://" + password + "@" + hostname + ":" + port +
+                           (ports.empty() ? "" : "," + replaceAllDistinct(ports, "/", ","))
                            + "?insecure=" +
                            (x.AllowInsecure.get() ? "1" : "0");
                 if (!obfsparam.empty()) {
                     proxyStr += "&obfs=" + obfsparam;
                     if (!obfsPassword.empty()) {
-                        proxyStr += "&obfs-password=" + obfsparam;
+                        proxyStr += "&obfs-password=" + obfsPassword;
                     }
                 }
                 if (!sni.empty()) {
@@ -1364,6 +1380,8 @@ std::string proxyToSingle(std::vector<Proxy> &nodes, int types, extra_settings &
                 if (!x.Fingerprint.empty()) {
                     proxyStr += "&pinSHA256=" + x.Fingerprint;
                 }
+                if (!ports.empty() && !x.HopInterval.empty())
+                    proxyStr += "&hop-interval=" + urlEncode(x.HopInterval);
                 proxyStr += "#" + urlEncode(remark);
                 break;
             case ProxyType::VLESS:
@@ -2916,6 +2934,22 @@ proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json,
             case ProxyType::Hysteria2: {
                 addSingBoxCommonMembers(proxy, x, "hysteria2", allocator);
                 proxy.AddMember("password", rapidjson::StringRef(x.Password.c_str()), allocator);
+                if (!x.Ports.empty()) {
+                    rapidjson::Value serverPorts(rapidjson::kArrayType);
+                    for (auto &range: split(replaceAllDistinct(x.Ports, "/", ","), ",")) {
+                        range = trim(range);
+                        if (range.empty())
+                            continue;
+                        range = strFind(range, "-") ? replaceAllDistinct(range, "-", ":") : range + ":" + range;
+                        serverPorts.PushBack(rapidjson::Value(range.c_str(), allocator), allocator);
+                    }
+                    if (!serverPorts.Empty())
+                        proxy.AddMember("server_ports", serverPorts, allocator);
+                }
+                if (!x.HopInterval.empty()) {
+                    std::string hopInterval = isNumeric(x.HopInterval) ? x.HopInterval + "s" : x.HopInterval;
+                    proxy.AddMember("hop_interval", rapidjson::Value(hopInterval.c_str(), allocator), allocator);
+                }
                 if (!x.TLSSecure) {
                     rapidjson::Value tls(rapidjson::kObjectType);
                     tls.AddMember("enabled", true, allocator);
