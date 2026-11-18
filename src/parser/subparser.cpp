@@ -1,5 +1,7 @@
 #include <string>
 #include <map>
+#include <algorithm>
+#include <cctype>
 
 #include "utils/base64/base64.h"
 #include "utils/ini_reader/ini_reader.h"
@@ -177,6 +179,27 @@ void splitHysteriaPorts(const std::string &spec, std::string &port, std::string 
         port = first.substr(0, dash);
         ports = spec;
     }
+}
+
+// normalize a hysteria hop interval to seconds: accepts "30", "30s", "1m", "1h" (sing-box durations)
+std::string normalizeHopInterval(std::string interval) {
+    auto allDigits = [](const std::string &str) {
+        return !str.empty() && std::all_of(str.begin(), str.end(), [](unsigned char c) { return std::isdigit(c); });
+    };
+    interval = trim(interval);
+    if (interval.empty() || allDigits(interval))
+        return interval;
+    unsigned long multiplier = 1;
+    switch (interval.back()) {
+        case 's': multiplier = 1; break;
+        case 'm': multiplier = 60; break;
+        case 'h': multiplier = 3600; break;
+        default: return interval;
+    }
+    std::string value = interval.substr(0, interval.size() - 1);
+    if (!allDigits(value) || value.size() > 9)
+        return interval;
+    return std::to_string(std::stoul(value) * multiplier);
 }
 
 void commonConstruct(Proxy &node, ProxyType type, const std::string &group, const std::string &remarks,
@@ -1659,6 +1682,7 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes) {
                 hysteriaConstruct(node, group, ps, server, port, type, auth, "", host, up, down, alpn, obfsParam,
                                   insecure, ports, sni,
                                   udp, tfo, scv, tribool(), underlying_proxy);
+                node.HopInterval = normalizeHopInterval(safe_as<std::string>(singleproxy["hop-interval"]));
                 break;
             case "hysteria2"_hash:
                 group = HYSTERIA2_DEFAULT_GROUP;
@@ -1696,6 +1720,7 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes) {
                 sni = host;
                 hysteria2Construct(node, group, ps, server, port, password, host, up, down, alpn, obfsParam,
                                    obfsPassword, sni, public_key, fingerprint, ports, udp, tfo, scv, underlying_proxy);
+                node.HopInterval = normalizeHopInterval(safe_as<std::string>(singleproxy["hop-interval"]));
                 break;
             case "tuic"_hash:
                 group = TUIC_DEFAULT_GROUP;
@@ -3315,6 +3340,7 @@ void explodeSingbox(rapidjson::Value &outbounds, std::vector<Proxy> &nodes) {
                         hysteria2Construct(node, group, ps, server, port, password, host, up, down, alpn,
                                            obfsParam, obfsPassword, sni, public_key, fingerprint, ports, udp, tfo,
                                            scv, underlying_proxy);
+                        node.HopInterval = normalizeHopInterval(GetMember(singboxNode, "hop_interval"));
                         break;
                     case "tuic"_hash:
                         group = TUIC_DEFAULT_GROUP;

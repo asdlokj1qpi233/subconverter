@@ -522,6 +522,12 @@ proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGroupCo
                 if (!x.Ports.empty()) {
                     singleproxy["ports"] = x.Ports;
                 }
+                if (!x.HopInterval.empty()) {
+                    if (isNumeric(x.HopInterval) && x.HopInterval.size() <= 9)
+                        singleproxy["hop-interval"] = std::stoi(x.HopInterval);
+                    else
+                        singleproxy["hop-interval"] = x.HopInterval;
+                }
                 if (!tfo.is_undef()) {
                     singleproxy["fast-open"] = tfo.get();
                 }
@@ -565,6 +571,12 @@ proxyToClash(std::vector<Proxy> &nodes, YAML::Node &yamlnode, const ProxyGroupCo
                     singleproxy["obfs-password"] = x.OBFSPassword;
                 if (!x.Ports.empty())
                     singleproxy["ports"] = x.Ports;
+                if (!x.HopInterval.empty()) {
+                    if (isNumeric(x.HopInterval) && x.HopInterval.size() <= 9)
+                        singleproxy["hop-interval"] = std::stoi(x.HopInterval);
+                    else
+                        singleproxy["hop-interval"] = x.HopInterval;
+                }
                 break;
             case ProxyType::TUIC:
                 singleproxy["type"] = "tuic";
@@ -1158,6 +1170,8 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
                 if (!x.Ports.empty())
                     proxy += ",port-hopping=\"" +
                              replaceAllDistinct(replaceAllDistinct(x.Ports, "/", ";"), ",", ";") + "\"";
+                if (!x.Ports.empty() && !x.HopInterval.empty() && isNumeric(x.HopInterval))
+                    proxy += ",port-hopping-interval=" + x.HopInterval;
                 break;
             case ProxyType::AnyTLS:
                 if (surge_ver < 4)
@@ -2929,6 +2943,10 @@ proxyToSingBox(std::vector<Proxy> &nodes, rapidjson::Document &json,
                     }
                     if (!serverPorts.Empty())
                         proxy.AddMember("server_ports", serverPorts, allocator);
+                }
+                if (!x.HopInterval.empty()) {
+                    std::string hopInterval = isNumeric(x.HopInterval) ? x.HopInterval + "s" : x.HopInterval;
+                    proxy.AddMember("hop_interval", rapidjson::Value(hopInterval.c_str(), allocator), allocator);
                 }
                 if (!x.TLSSecure) {
                     rapidjson::Value tls(rapidjson::kObjectType);
