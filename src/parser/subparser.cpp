@@ -1594,6 +1594,8 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes) {
                     case "grpc"_hash:
                         singleproxy["servername"] >>= host;
                         singleproxy["grpc-opts"]["grpc-service-name"] >>= path;
+                        singleproxy["grpc-opts"]["grpc-mode"] >>= mode;
+                        singleproxy["grpc-opts"]["grpc-authority"] >>= node.GRPCAuthority;
                         edge.clear();
                         break;
                     default:
@@ -1602,10 +1604,8 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes) {
 
                 tls = safe_as<std::string>(singleproxy["tls"]) == "true" ? "tls" : "";
                 if (singleproxy["reality-opts"].IsDefined()) {
-                    host = singleproxy["sni"].IsDefined()
-                               ? safe_as<std::string>(singleproxy["sni"])
-                               : safe_as<std::string>(singleproxy["servername"]);
-                    printf("host:%s", host.c_str());
+                    if (net != "xhttp")
+                        host = sni;
                     singleproxy["reality-opts"]["public-key"] >>= pbk;
                     singleproxy["reality-opts"]["short-id"] >>= sid;
                 }
@@ -1614,11 +1614,9 @@ void explodeClash(Node yamlnode, std::vector<Proxy> &nodes) {
                 singleproxy["alpn"] >>= alpnList;
                 singleproxy["packet-encoding"] >>= packet_encoding;
                 singleproxy["encryption"] >>= encryption;
-                bool vless_udp;
-                singleproxy["udp"] >> vless_udp;
                 vlessConstruct(node, XRAY_DEFAULT_GROUP, ps, server, port, type, id, aid, net, "auto", flow, mode,
-                               path, host, "", tls, pbk, sid, fp, sni, alpnList, packet_encoding, encryption, udp,
-                               tribool(), tribool(), tribool(), underlying_proxy, v2ray_http_upgrade);
+                               path, host, edge, tls, pbk, sid, fp, sni, alpnList, packet_encoding, encryption, udp,
+                               tribool(), scv, tribool(), underlying_proxy, v2ray_http_upgrade);
                 break;
             case "hysteria"_hash:
                 group = HYSTERIA_DEFAULT_GROUP;
@@ -1905,8 +1903,6 @@ void explodeStdVless(std::string vless, Proxy &node) {
     std::string add, port, type, id, aid, net, flow, pbk, sid, fp, mode, path, host, tls, remarks, sni, encryption;
     std::string addition;
     vless = vless.substr(8);
-    string_size pos;
-
     extractRemark(vless, remarks);
     const std::string stdvless_matcher =
             R"(^([\da-fA-F]{8}-[\da-fA-F]{4}-[\da-fA-F]{4}-[\da-fA-F]{4}-[\da-fA-F]{12})@\[?([\d\-a-zA-Z:.]+)\]?:(\d+)(?:\/?\?(.*))?$)";
@@ -1915,8 +1911,13 @@ void explodeStdVless(std::string vless, Proxy &node) {
 
     tls = getUrlArg(addition, "security");
     net = getUrlArg(addition, "type");
-    if (net.empty())
+    const bool http_upgrade = net == "httpupgrade";
+    if (net.empty() || net == "raw")
         net = "tcp";
+    else if (http_upgrade)
+        net = "ws";
+    else if (net == "splithttp")
+        net = "xhttp";
     flow = getUrlArg(addition, "flow");
     pbk = getUrlArg(addition, "pbk");
     sid = getUrlArg(addition, "sid");
@@ -1924,18 +1925,23 @@ void explodeStdVless(std::string vless, Proxy &node) {
     fp = getUrlArg(addition, "fp");
     std::string packet_encoding = getUrlArg(addition, "packet-encoding");
     std::vector<std::string> alpnList = getUrlAlpnList(addition);
+    sni = urlDecode(getUrlArg(addition, "sni"));
     switch (hash_(net)) {
         case "tcp"_hash:
-        case "ws"_hash:
         case "h2"_hash:
             type = getUrlArg(addition, "headerType");
-            host = getUrlArg(addition, strFind(addition, "sni") ? "sni" : "host");
+            host = sni.empty() ? urlDecode(getUrlArg(addition, "host")) : sni;
+            path = getUrlArg(addition, "path");
+            break;
+        case "ws"_hash:
+            host = urlDecode(getUrlArg(addition, "host"));
             path = getUrlArg(addition, "path");
             break;
         case "grpc"_hash:
-            host = getUrlArg(addition, "sni");
+            host = sni;
             path = getUrlArg(addition, "serviceName");
             mode = getUrlArg(addition, "mode");
+            node.GRPCAuthority = urlDecode(getUrlArg(addition, "authority"));
             break;
         case "quic"_hash:
             type = getUrlArg(addition, "headerType");
@@ -1943,8 +1949,7 @@ void explodeStdVless(std::string vless, Proxy &node) {
             path = getUrlArg(addition, "key");
             break;
         case "xhttp"_hash:
-            type = getUrlArg(addition, "headerType");
-            host = getUrlArg(addition, strFind(addition, "sni") ? "sni" : "host");
+            host = urlDecode(getUrlArg(addition, "host"));
             path = getUrlArg(addition, "path");
             readXHTTPExtraOptions(addition, node);
             for (const auto &key: xhttp_option_keys) {
@@ -1953,7 +1958,7 @@ void explodeStdVless(std::string vless, Proxy &node) {
                     value = getUrlArg(addition, replaceAllDistinct(key, "-", "_"));
                 }
                 if (!value.empty()) {
-                    node.XHTTPOptions[key] = value;
+                    node.XHTTPOptions[key] = urlDecode(value);
                 }
             }
             break;
@@ -1962,9 +1967,11 @@ void explodeStdVless(std::string vless, Proxy &node) {
     }
     if (remarks.empty())
         remarks = add + ":" + port;
-    sni = getUrlArg(addition, "sni");
+    tribool scv(getUrlArg(addition, "allowInsecure"));
+    scv.define(tribool(getUrlArg(addition, "insecure")));
     vlessConstruct(node, XRAY_DEFAULT_GROUP, remarks, add, port, type, id, aid, net, "auto", flow, mode, path, host, "",
-                   tls, pbk, sid, fp, sni, alpnList, packet_encoding, encryption);
+                   tls, urlDecode(pbk), urlDecode(sid), fp, sni, alpnList, packet_encoding, encryption,
+                   tribool(), tribool(), scv, tribool(), "", http_upgrade ? tribool(true) : tribool());
     return;
 }
 
@@ -3165,12 +3172,13 @@ void explodeSingbox(rapidjson::Value &outbounds, std::vector<Proxy> &nodes) {
                                         tfo,
                                         scv, tribool(), underlying_proxy);
                         break;
-                    case "vless"_hash:
+                    case "vless"_hash: {
                         group = XRAY_DEFAULT_GROUP;
                         id = GetMember(singboxNode, "uuid");
                         flow = GetMember(singboxNode, "flow");
                         encryption = GetMember(singboxNode, "encryption");
                         packet_encoding = GetMember(singboxNode, "packet_encoding");
+                        tribool http_upgrade;
                         if (singboxNode.HasMember("transport") && singboxNode["transport"].IsObject()) {
                             rapidjson::Value transport = singboxNode["transport"].GetObject();
                             net = GetMember(transport, "type");
@@ -3195,6 +3203,7 @@ void explodeSingbox(rapidjson::Value &outbounds, std::vector<Proxy> &nodes) {
                                 }
                                 case "httpupgrade"_hash: {
                                     net = "h2";
+                                    http_upgrade = true;
                                     host = GetMember(transport, "host");
                                     path = GetMember(transport, "path");
                                     edge.clear();
@@ -3209,9 +3218,10 @@ void explodeSingbox(rapidjson::Value &outbounds, std::vector<Proxy> &nodes) {
                         }
 
                         vlessConstruct(node, group, ps, server, port, type, id, aid, net, "auto", flow, mode, path,
-                                       host, "", tls, pbk, sid, fp, sni, alpnList, packet_encoding, encryption,
-                                       udp, tribool(), tribool(), tribool(), underlying_proxy);
+                                       host, edge, tls, pbk, sid, fp, sni, alpnList, packet_encoding, encryption,
+                                       udp, tfo, scv, tribool(), underlying_proxy, http_upgrade);
                         break;
+                    }
                     case "http"_hash:
                         password = GetMember(singboxNode, "password");
                         user = GetMember(singboxNode, "username");

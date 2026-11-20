@@ -62,9 +62,12 @@ services:
 | Surge 3                           |     ✓     |      ✓       | surge&ver=3    |
 | Surge 4                           |     ✓     |      ✓       | surge&ver=4    |
 | Surge 5                           |     ✓     |      ✓       | surge&ver=5    |
+| Surge 6                           |     ✓     |      ✓       | surge&ver=6 or surge6 |
 | V2Ray                             |     ✓     |      ✓       | v2ray          |
 | Telegram-liked HTTP/Socks 5 links |     ✓     |      ×       | Only as source |
 | Singbox                           |     ✓      |      ✓       | singbox        |
+
+Surge 6 output can include VLESS proxies parsed from share links, Clash Meta or sing-box subscriptions. VLESS requires [Surge iOS 6.0+ or Surge Mac 6.12+](https://manual.nssurge.com/policies/vless.html).
 
 Notice:
 

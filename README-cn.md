@@ -133,11 +133,14 @@
 | Surge 2                |   ✓   |    ✓   | surge&ver=2    |
 | Surge 3                |   ✓   |    ✓   | surge&ver=3    |
 | Surge 4                |   ✓   |    ✓   | surge&ver=4    |
+| Surge 6                |   ✓   |    ✓   | surge&ver=6 或 surge6 |
 | Trojan                 |   ✓   |    ✓   | trojan         |
 | V2Ray                  |   ✓   |    ✓   | v2ray          |
 | 类 TG 代理的 HTTP/Socks 链接 |   ✓   |    ×   | 仅支持 `&url=` 调用 |
 | Mixed                  |   ×   |    ✓   | mixed          |
 | Auto                   |   ×   |    ✓   | auto           |
+
+Surge 6 可导出来自 VLESS 分享链接、Clash Meta 或 sing-box 订阅的 VLESS 节点。VLESS 需要 [Surge iOS 6.0+ 或 Surge Mac 6.12+](https://manual.nssurge.com/policies/vless.html)。
 
 注意：
 
