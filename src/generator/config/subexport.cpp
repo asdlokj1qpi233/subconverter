@@ -1,6 +1,8 @@
 #include <algorithm>
+#include <iomanip>
 #include <iostream>
 #include <numeric>
+#include <sstream>
 #include <cmath>
 #include <climits>
 
@@ -950,6 +952,105 @@ std::string generatePeer(Proxy &node, bool client_id_as_reserved = false) {
     return result;
 }
 
+static std::string surgeVlessProxy(const Proxy &node, tribool skip_cert_verify) {
+    const bool reality = !node.PublicKey.empty();
+    const bool tls = node.TLSSecure || reality;
+    const bool encryption = !node.Encryption.empty() && node.Encryption != "none";
+    const bool tcp = node.TransferProtocol == "tcp";
+    const bool ws = node.TransferProtocol == "ws" || node.V2rayHttpUpgrade;
+    const bool grpc = node.TransferProtocol == "grpc";
+    const bool xhttp = node.TransferProtocol == "xhttp";
+    if ((!tcp && !ws && !grpc && !xhttp) || (ws && reality) || (grpc && !tls) ||
+        (node.TLSStr == "reality" && !reality) || (!node.ShortId.empty() && !reality))
+        return "";
+    if (!node.Flow.empty()) {
+        const bool vision = node.Flow == "xtls-rprx-vision" || node.Flow == "xtls-rprx-vision-udp443";
+        if (!vision || grpc || (!encryption && !(tcp && tls)))
+            return "";
+    }
+
+    std::ostringstream proxy;
+    proxy << "vless, " << node.Hostname << ", " << node.Port;
+    auto append = [&proxy](const char *key, const std::string &value) {
+        if (value.empty())
+            return;
+        proxy << ", " << key << '=';
+        if (value.find_first_of(",\"\\") != std::string::npos)
+            proxy << std::quoted(value);
+        else
+            proxy << value;
+    };
+    append("username", node.UserId);
+    append("flow", node.Flow);
+    if (encryption)
+        append("encryption", node.Encryption);
+    if (reality) {
+        append("reality-public-key", node.PublicKey);
+        append("reality-short-id", node.ShortId);
+    } else if (tls) {
+        append("tls", "true");
+        if (!skip_cert_verify.is_undef())
+            append("skip-cert-verify", skip_cert_verify.get_str());
+    }
+    if (tls) {
+        append("sni", node.ServerName);
+        append("alpn", join(node.AlpnList, ","));
+    }
+    if (ws) {
+        append("ws", "true");
+        if (node.V2rayHttpUpgrade)
+            append("ws-http-upgrade", "true");
+        append("ws-path", node.Path);
+        string_array headers;
+        if (!node.Host.empty())
+            headers.emplace_back("Host:" + node.Host);
+        if (!node.Edge.empty())
+            headers.emplace_back("Edge:" + node.Edge);
+        append("ws-headers", join(headers, "|"));
+    } else if (grpc) {
+        append("grpc", "true");
+        append("grpc-service-name", node.GRPCServiceName);
+        append("grpc-authority", node.GRPCAuthority);
+        if (node.GRPCMode == "multi")
+            append("grpc-mode", "multi");
+    } else if (xhttp) {
+        append("xhttp", "true");
+        append("xhttp-path", node.Path);
+        append("xhttp-host", node.Host);
+        if (!node.Edge.empty())
+            append("xhttp-headers", "Edge:" + node.Edge);
+        static const std::map<std::string, const char *> options = {
+            {"mode", "xhttp-mode"},
+            {"no-grpc-header", "xhttp-no-grpc-header"},
+            {"x-padding-bytes", "xhttp-padding-bytes"},
+            {"x-padding-obfs-mode", "xhttp-padding-obfs"},
+            {"x-padding-key", "xhttp-padding-key"},
+            {"x-padding-header", "xhttp-padding-header"},
+            {"x-padding-placement", "xhttp-padding-placement"},
+            {"x-padding-method", "xhttp-padding-method"},
+            {"uplink-http-method", "xhttp-uplink-method"},
+            {"session-placement", "xhttp-session-placement"},
+            {"session-key", "xhttp-session-key"},
+            {"seq-placement", "xhttp-seq-placement"},
+            {"seq-key", "xhttp-seq-key"},
+            {"uplink-data-placement", "xhttp-uplink-data-placement"},
+            {"uplink-data-key", "xhttp-uplink-data-key"},
+            {"uplink-chunk-size", "xhttp-uplink-chunk-size"},
+            {"sc-max-each-post-bytes", "xhttp-max-each-post-bytes"},
+            {"sc-min-posts-interval-ms", "xhttp-min-posts-interval"},
+        };
+        for (const auto &[key, value] : node.XHTTPOptions) {
+            auto option = options.find(key);
+            if (option != options.end())
+                append(option->second, value);
+        }
+    }
+    std::string result = proxy.str();
+    if (result.find_first_of("\r\n") != std::string::npos)
+        return "";
+    return result;
+}
+
 std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf,
                          std::vector<RulesetContent> &ruleset_content_array,
                          const ProxyGroupConfigs &extra_proxy_group,
@@ -1125,6 +1226,13 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
                 if (!scv.is_undef())
                     proxy += ", skip-cert-verify=" + scv.get_str();
                 break;
+            case ProxyType::VLESS:
+                if (surge_ver < 6)
+                    continue;
+                proxy = surgeVlessProxy(x, scv);
+                if (proxy.empty())
+                    continue;
+                break;
             case ProxyType::Snell:
                 proxy = "snell, " + hostname + ", " + port + ", psk=" + password;
                 if (!obfs.empty()) {
@@ -1199,7 +1307,7 @@ std::string proxyToSurge(std::vector<Proxy> &nodes, const std::string &base_conf
 
         if (!tfo.is_undef())
             proxy += ", tfo=" + tfo.get_str();
-        if (!udp.is_undef())
+        if (!udp.is_undef() && x.Type != ProxyType::VLESS)
             proxy += ", udp-relay=" + udp.get_str();
         if (underlying_proxy != "")
             proxy += ", underlying-proxy=" + underlying_proxy;

@@ -294,6 +294,10 @@ std::string subconverter(RESPONSE_CALLBACK_ARGS) {
     int *status_code = &response.status_code;
 
     std::string argTarget = getUrlArg(argument, "target"), argSurgeVer = getUrlArg(argument, "ver");
+    if (argTarget == "surge6") {
+        argTarget = "surge";
+        argSurgeVer = "6";
+    }
     tribool argClashNewField = getUrlArg(argument, "new_name");
     int intSurgeVer = !argSurgeVer.empty() ? to_int(argSurgeVer, 3) : 3;
     if (argTarget == "auto")
